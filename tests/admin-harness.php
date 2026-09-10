@@ -26,6 +26,7 @@ function esc_attr__( $text, $domain = '' ) { return $text; }
 function esc_attr( $text ) { return htmlspecialchars( (string) $text, ENT_QUOTES ); }
 function esc_url( $url ) { return htmlspecialchars( (string) $url, ENT_QUOTES ); }
 function wp_kses_post( $html ) { return $html; }
+function number_format_i18n( $number, $decimals = 0 ) { return number_format( (float) $number, (int) $decimals ); }
 function admin_url( $path = '' ) { return 'https://www.mamanvoyage.com/wp-admin/' . ltrim( (string) $path, '/' ); }
 function get_edit_post_link( $id, $context = 'display' ) { return admin_url( 'post.php?post=' . (int) $id . '&action=edit' ); }
 function wp_nonce_field( $action = -1 ) { echo '<input type="hidden" name="_wpnonce" value="nonce" />'; }
@@ -52,6 +53,7 @@ function add_filter( ...$args ) {}
 function add_management_page( ...$args ) {}
 
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-admin.php';
+require_once __DIR__ . '/../includes/class-mavo-hub-manager-audit-admin.php';
 
 /** Run a POST task through the router and return the redirect URL. */
 function post_task( array $fields ): string {

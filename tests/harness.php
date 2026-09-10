@@ -120,6 +120,28 @@ function delete_post_meta( $post_id, $key ) {
 	return true;
 }
 
+/* ------------------------------------------------------------ shortcodes */
+
+/** Simplified core shortcode_parse_atts(): quoted and bare key=value pairs. */
+function shortcode_parse_atts( $text ) {
+	$atts = [];
+	$text = preg_replace( "/[\x{00a0}\x{200b}]+/u", ' ', (string) $text );
+
+	if ( preg_match_all( '/([\w-]+)\s*=\s*"([^"]*)"|([\w-]+)\s*=\s*\'([^\']*)\'|([\w-]+)\s*=\s*([^\s\'"]+)/', $text, $matches, PREG_SET_ORDER ) ) {
+		foreach ( $matches as $match ) {
+			if ( ! empty( $match[1] ) ) {
+				$atts[ strtolower( $match[1] ) ] = stripcslashes( $match[2] );
+			} elseif ( ! empty( $match[3] ) ) {
+				$atts[ strtolower( $match[3] ) ] = stripcslashes( $match[4] );
+			} elseif ( ! empty( $match[5] ) ) {
+				$atts[ strtolower( $match[5] ) ] = stripcslashes( $match[6] );
+			}
+		}
+	}
+
+	return $atts;
+}
+
 /* ------------------------------------------------------------- Polylang */
 
 function mock_enable_polylang( bool $on = true ): void {
@@ -300,5 +322,6 @@ function finish(): void {
 
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-model.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-scanner.php';
+require_once __DIR__ . '/../includes/class-mavo-hub-manager-audit.php';
 
 reset_store();

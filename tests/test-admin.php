@@ -97,7 +97,7 @@ ok( str_contains( $html, 'Internal-link scanner' ), 'the scanner section renders
 ok( str_contains( $html, 'Assign selected linked posts' ), 'the batch assign button renders' );
 ok( str_contains( $html, 'Assigned but no longer linked' ), 'the reverse groups render' );
 ok( str_contains( $html, 'Add child manually' ), 'the manual editor renders' );
-ok( str_contains( $html, 'Run relationship diagnostics' ), 'the diagnostics button renders' );
+ok( str_contains( $html, 'Open Tools → Hub Audit' ), 'the audit page is linked, and its reports never run from this page' );
 ok( str_contains( $html, 'Cross-language' ), 'the cross-language state is shown' );
 
 // Every row-action button must have the form it points at.

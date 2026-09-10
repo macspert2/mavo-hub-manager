@@ -40,7 +40,9 @@ class MHM_Admin {
 	}
 
 	public static function enqueue( string $hook ): void {
-		if ( 'tools_page_' . self::PAGE_SLUG !== $hook ) {
+		$hooks = [ 'tools_page_' . self::PAGE_SLUG, 'tools_page_' . MHM_Audit_Admin::PAGE_SLUG ];
+
+		if ( ! in_array( $hook, $hooks, true ) ) {
 			return;
 		}
 
@@ -85,7 +87,8 @@ class MHM_Admin {
 		return 'mhm_pending_' . get_current_user_id();
 	}
 
-	private static function add_notice( string $type, string $message ): void {
+	/** Public so the audit page can queue notices for the same rendering. */
+	public static function add_notice( string $type, string $message ): void {
 		$notices   = self::stored_notices();
 		$notices[] = [ 'type' => $type, 'message' => $message ];
 		set_transient( self::notice_key(), $notices, 5 * MINUTE_IN_SECONDS );
@@ -144,9 +147,6 @@ class MHM_Admin {
 		if ( $hub_id ) {
 			$redirect['hub'] = $hub_id;
 		}
-		if ( ! empty( $_POST['diagnostics'] ) ) {
-			$redirect['diagnostics'] = 1;
-		}
 		foreach ( [ 'htype', 'hlang' ] as $key ) {
 			if ( ! empty( $_POST[ $key ] ) ) {
 				$redirect[ $key ] = sanitize_key( wp_unslash( $_POST[ $key ] ) );
@@ -179,10 +179,6 @@ class MHM_Admin {
 
 			case 'remove_child':
 				$redirect = self::task_remove_child( $confirm, $redirect );
-				break;
-
-			case 'diagnostics':
-				$redirect['diagnostics'] = 1;
 				break;
 
 			default:
@@ -549,11 +545,13 @@ class MHM_Admin {
 
 	/* -------------------------------------------------------------- display */
 
-	private static function badge( string $text, string $class ): string {
+	/* The small display helpers below are shared with Tools → Hub Audit. */
+
+	public static function badge( string $text, string $class ): string {
 		return '<span class="mhm-badge mhm-badge-' . esc_attr( $class ) . '">' . esc_html( $text ) . '</span>';
 	}
 
-	private static function type_badge( ?string $type ): string {
+	public static function type_badge( ?string $type ): string {
 		if ( null === $type ) {
 			return '<span class="mhm-muted">—</span>';
 		}
@@ -564,7 +562,7 @@ class MHM_Admin {
 		);
 	}
 
-	private static function lang_cell( int $post_id ): string {
+	public static function lang_cell( int $post_id ): string {
 		if ( ! MHM_Model::has_polylang() ) {
 			return '<span class="mhm-muted">—</span>';
 		}
@@ -575,7 +573,7 @@ class MHM_Admin {
 	}
 
 	/** "Title (#12)" with an edit link when the post exists. */
-	private static function post_link( ?int $post_id ): string {
+	public static function post_link( ?int $post_id ): string {
 		$post_id = absint( (int) $post_id );
 		if ( ! $post_id ) {
 			return '<span class="mhm-muted">—</span>';
@@ -669,13 +667,13 @@ class MHM_Admin {
 			echo '<div class="mhm-panel"><p>' . esc_html__( 'Select a hub above to manage its children, scan its internal links and see its hierarchy.', 'mavo-hub-manager' ) . '</p></div>';
 		}
 
-		self::render_diagnostics( $context );
+		self::render_audit_link();
 		self::flush_deferred_forms();
 
 		echo '</div>';
 	}
 
-	private static function render_notices(): void {
+	public static function render_notices(): void {
 		foreach ( self::take_notices() as $notice ) {
 			$class = 'error' === $notice['type'] ? 'notice-error' : ( 'warning' === $notice['type'] ? 'notice-warning' : 'notice-success' );
 			printf(
@@ -718,7 +716,7 @@ class MHM_Admin {
 		echo '<p><strong>' . esc_html__( 'Primary geographic hub', 'mavo-hub-manager' ) . '</strong> — ' . esc_html__( 'the most immediate geographic editorial hub that owns this content.', 'mavo-hub-manager' ) . '<br />';
 		echo '<strong>' . esc_html__( 'Primary thematic hub', 'mavo-hub-manager' ) . '</strong> — ' . esc_html__( 'the most immediate thematic editorial hub that owns this content.', 'mavo-hub-manager' ) . '</p>';
 		echo '<p>' . esc_html__( '"Primary" is not "every hub that links to this article" and not "every relevant place or theme". Broader relationships are inferred by walking the hub hierarchy. Each relationship is stored once, on the child; hubs never store child lists.', 'mavo-hub-manager' ) . '</p>';
-		echo '<p>' . esc_html__( 'The link scanner reads stored post content only. Links produced by shortcodes are not rendered and therefore not discovered — add those children manually.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p>' . esc_html__( 'The link scanner reads stored post content only. Links produced by shortcodes are not rendered and therefore not discovered here — add those children manually. (The audit\'s link-back report does understand [mavo_hub_strip], which it reads as text.)', 'mavo-hub-manager' ) . '</p>';
 		echo '</div>';
 	}
 
@@ -1305,87 +1303,21 @@ class MHM_Admin {
 		echo '</div>';
 	}
 
-	/* ---------------------------------------------------------- diagnostics */
+	/* ---------------------------------------------------------------- audit */
 
-	private static function render_diagnostics( array $context ): void {
-		$run = ! empty( $_GET['diagnostics'] );
-
+	/**
+	 * Site-wide reports live on their own screen: they query every post that
+	 * carries hub meta, so they must never run as a side effect of this page.
+	 */
+	private static function render_audit_link(): void {
 		echo '<div class="mhm-panel">';
-		echo '<h2>' . esc_html__( 'Relationship diagnostics', 'mavo-hub-manager' ) . '</h2>';
-		echo '<p class="description">' . esc_html__( 'Runs on demand only: it inspects every post and page carrying a primary-hub value. Nothing is repaired automatically.', 'mavo-hub-manager' ) . '</p>';
-
-		self::render_simple_form(
-			array_filter( [ 'task' => 'diagnostics', 'hub' => isset( $_GET['hub'] ) ? absint( wp_unslash( $_GET['hub'] ) ) : 0 ] ),
-			$context,
-			__( 'Run relationship diagnostics', 'mavo-hub-manager' ),
-			'button button-secondary'
-		);
-
-		if ( ! $run ) {
-			echo '</div>';
-
-			return;
-		}
-
-		$report = MHM_Model::run_diagnostics();
-
+		echo '<h2>' . esc_html__( 'Audit', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'Site-wide reports — posts with no hub, children that never link back to their hub, hub health, and broken stored relationships — run on demand on their own screen.', 'mavo-hub-manager' ) . '</p>';
 		printf(
-			'<p>%s</p>',
-			esc_html(
-				sprintf(
-					/* translators: %d: number of relationships inspected */
-					__( '%d stored relationship(s) inspected.', 'mavo-hub-manager' ),
-					$report['scanned']
-				)
-			)
+			'<p><a class="button button-secondary" href="%s">%s</a></p>',
+			esc_url( MHM_Audit_Admin::page_url() ),
+			esc_html__( 'Open Tools → Hub Audit', 'mavo-hub-manager' )
 		);
-
-		$groups = [
-			'missing_target' => __( 'Primary hub points to a missing object', 'mavo-hub-manager' ),
-			'wrong_hub_type' => __( 'Primary hub has the wrong hub type', 'mavo-hub-manager' ),
-			'self_reference' => __( 'Self-references', 'mavo-hub-manager' ),
-			'cycle'          => __( 'Cycles', 'mavo-hub-manager' ),
-			'cross_language' => __( 'Cross-language relationships', 'mavo-hub-manager' ),
-		];
-
-		foreach ( $groups as $key => $label ) {
-			$rows = $report[ $key ];
-
-			printf( '<h3>%s <span class="mhm-count">%d</span></h3>', esc_html( $label ), count( $rows ) );
-
-			if ( ! $rows ) {
-				echo '<p class="mhm-muted">' . esc_html__( 'None.', 'mavo-hub-manager' ) . '</p>';
-				continue;
-			}
-
-			echo '<table class="widefat striped mhm-table"><thead><tr>';
-			echo '<th>' . esc_html__( 'Child', 'mavo-hub-manager' ) . '</th>';
-			echo '<th>' . esc_html__( 'Relationship', 'mavo-hub-manager' ) . '</th>';
-			echo '<th>' . esc_html__( 'Stored hub', 'mavo-hub-manager' ) . '</th>';
-			echo '<th>' . esc_html__( 'Action', 'mavo-hub-manager' ) . '</th>';
-			echo '</tr></thead><tbody>';
-
-			foreach ( $rows as $row ) {
-				echo '<tr>';
-				echo '<td>' . self::post_link( (int) $row['child'] ) . ' ' . self::lang_cell( (int) $row['child'] ) . '</td>';
-				echo '<td>' . self::type_badge( $row['type'] ) . '</td>';
-				echo '<td>' . self::post_link( (int) $row['hub'] ) . ' ' . self::lang_cell( (int) $row['hub'] ) . '</td>';
-				echo '<td>';
-				self::render_simple_form(
-					[ 'task' => 'remove_child', 'child' => (int) $row['child'], 'type' => (string) $row['type'], 'diagnostics' => 1 ],
-					$context,
-					__( 'Remove relationship', 'mavo-hub-manager' ),
-					'button button-small button-link-delete',
-					__( 'Remove this stored relationship?', 'mavo-hub-manager' ),
-					true
-				);
-				echo '</td>';
-				echo '</tr>';
-			}
-
-			echo '</tbody></table>';
-		}
-
 		echo '</div>';
 	}
 }

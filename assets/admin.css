@@ -76,3 +76,32 @@
 .mhm-list li { margin-bottom: 6px; }
 
 .mhm-confirm form { margin-bottom: 8px; }
+
+/* ------------------------------------------------------- Tools → Hub Audit */
+
+.mhm-tabs { margin: 16px 0 0; }
+
+.mhm-field { align-items: center; display: inline-flex; gap: 4px; }
+
+.mhm-col-num { text-align: right; white-space: nowrap; }
+
+.mhm-pagination { align-items: center; display: flex; gap: 8px; margin: 12px 0 0; }
+
+.mhm-summary {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 20px;
+	margin: 8px 0 12px;
+}
+.mhm-summary li { margin: 0; }
+
+.mhm-issues { margin: 0; }
+.mhm-issues li { margin: 0 0 4px; }
+
+.mhm-snippet {
+	display: inline-block;
+	font-size: 11px;
+	max-width: 30em;
+	overflow-wrap: anywhere;
+	user-select: all;
+}

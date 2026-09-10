@@ -1,0 +1,761 @@
+<?php
+/**
+ * Tools → Hub Audit.
+ *
+ * Site-wide, read-only reports over the hub model. Every report runs only when
+ * asked for: opening a tab runs that tab's query and nothing else, and no audit
+ * ever writes a relationship. The single mutating action here — removing one
+ * broken stored relationship — goes through admin-post.php with a capability
+ * check, a nonce and MHM_Model validation, exactly like the Hub Manager page.
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+class MHM_Audit_Admin {
+
+	public const CAPABILITY = MHM_Admin::CAPABILITY;
+	public const PAGE_SLUG  = 'mavo-hub-audit';
+	public const ACTION     = 'mavo_hub_audit_action';
+
+	/** Tab => label. */
+	public static function tabs(): array {
+		return [
+			'missing'  => __( 'Posts without a hub', 'mavo-hub-manager' ),
+			'linkback' => __( 'No link back to hub', 'mavo-hub-manager' ),
+			'health'   => __( 'Hub health', 'mavo-hub-manager' ),
+			'errors'   => __( 'Relationship errors', 'mavo-hub-manager' ),
+		];
+	}
+
+	public static function init(): void {
+		add_action( 'admin_menu', [ __CLASS__, 'register_page' ] );
+		add_action( 'admin_post_' . self::ACTION, [ __CLASS__, 'handle_post' ] );
+	}
+
+	public static function register_page(): void {
+		add_management_page(
+			__( 'Hub Audit', 'mavo-hub-manager' ),
+			__( 'Hub Audit', 'mavo-hub-manager' ),
+			self::CAPABILITY,
+			self::PAGE_SLUG,
+			[ __CLASS__, 'render_page' ]
+		);
+	}
+
+	public static function page_url( array $args = [] ): string {
+		return add_query_arg(
+			array_merge( [ 'page' => self::PAGE_SLUG ], array_filter( $args, static fn( $v ) => '' !== $v && null !== $v ) ),
+			admin_url( 'tools.php' )
+		);
+	}
+
+	/* ---------------------------------------------------------- POST action */
+
+	/** The only mutation on this page: drop one broken stored relationship. */
+	public static function handle_post(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_die( esc_html__( 'You are not allowed to manage hubs.', 'mavo-hub-manager' ), 403 );
+		}
+
+		check_admin_referer( self::ACTION );
+
+		$child = isset( $_POST['child'] ) ? absint( wp_unslash( $_POST['child'] ) ) : 0;
+		$type  = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
+
+		if ( ! $child || ! MHM_Model::is_valid_type( $type ) ) {
+			MHM_Admin::add_notice( 'error', __( 'Nothing to remove: unknown post or hub type.', 'mavo-hub-manager' ) );
+		} else {
+			$old = MHM_Model::get_primary_hub( $child, $type );
+
+			if ( MHM_Model::remove_primary_hub( $child, $type ) ) {
+				MHM_Admin::add_notice(
+					'success',
+					sprintf(
+						/* translators: 1: hub type label, 2: post title, 3: previous hub ID */
+						__( 'Removed the %1$s primary hub of "%2$s" (was #%3$d).', 'mavo-hub-manager' ),
+						MHM_Model::type_label( $type ),
+						get_the_title( $child ),
+						(int) $old
+					)
+				);
+			} else {
+				MHM_Admin::add_notice( 'warning', __( 'There was no such assignment to remove.', 'mavo-hub-manager' ) );
+			}
+		}
+
+		$redirect = [];
+		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'run' ] as $key ) {
+			if ( isset( $_POST[ $key ] ) && '' !== $_POST[ $key ] ) {
+				$redirect[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
+			}
+		}
+
+		wp_safe_redirect( self::page_url( $redirect ) );
+		exit;
+	}
+
+	/* -------------------------------------------------------------- context */
+
+	/** Current filters, sanitised once and carried through every link and form. */
+	private static function context(): array {
+		$tabs = self::tabs();
+		$tab  = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'missing';
+
+		return [
+			'tab'    => isset( $tabs[ $tab ] ) ? $tab : 'missing',
+			'mode'   => isset( $_GET['mode'] ) ? sanitize_key( wp_unslash( $_GET['mode'] ) ) : 'geo',
+			'ltype'  => isset( $_GET['ltype'] ) ? sanitize_key( wp_unslash( $_GET['ltype'] ) ) : 'any',
+			'htype'  => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
+			'lang'   => isset( $_GET['lang'] ) ? sanitize_key( wp_unslash( $_GET['lang'] ) ) : '',
+			'ptype'  => isset( $_GET['ptype'] ) ? sanitize_key( wp_unslash( $_GET['ptype'] ) ) : 'any',
+			'status' => isset( $_GET['status'] ) ? sanitize_key( wp_unslash( $_GET['status'] ) ) : 'publish',
+			'stale'  => ! empty( $_GET['stale'] ) ? '1' : '',
+			'paged'  => isset( $_GET['paged'] ) ? max( 1, absint( wp_unslash( $_GET['paged'] ) ) ) : 1,
+			'offset' => isset( $_GET['offset'] ) ? max( 0, absint( wp_unslash( $_GET['offset'] ) ) ) : 0,
+			's'      => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
+			'run'    => ! empty( $_GET['run'] ) ? '1' : '',
+		];
+	}
+
+	/** Every Polylang language on the site, or [] without Polylang. */
+	private static function languages(): array {
+		if ( ! function_exists( 'pll_languages_list' ) ) {
+			return [];
+		}
+
+		$langs = pll_languages_list( [ 'fields' => 'slug' ] );
+
+		return is_array( $langs ) ? $langs : [];
+	}
+
+	private static function statuses(): array {
+		return [
+			'publish' => __( 'Published', 'mavo-hub-manager' ),
+			'draft'   => __( 'Draft', 'mavo-hub-manager' ),
+			'pending' => __( 'Pending', 'mavo-hub-manager' ),
+			'future'  => __( 'Scheduled', 'mavo-hub-manager' ),
+			'private' => __( 'Private', 'mavo-hub-manager' ),
+			'any'     => __( 'Any status', 'mavo-hub-manager' ),
+		];
+	}
+
+	/* ----------------------------------------------------------------- page */
+
+	public static function render_page(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_die( esc_html__( 'You are not allowed to manage hubs.', 'mavo-hub-manager' ), 403 );
+		}
+
+		$context = self::context();
+
+		echo '<div class="wrap mhm-wrap">';
+		echo '<h1>' . esc_html__( 'Hub Audit', 'mavo-hub-manager' ) . '</h1>';
+
+		MHM_Admin::render_notices();
+
+		echo '<p class="description">' . esc_html__( 'Site-wide reports over the hub relationships. Read-only: nothing here assigns, repairs or deletes a relationship unless you click a button that says so.', 'mavo-hub-manager' ) . ' ';
+		printf(
+			'<a href="%s">%s</a></p>',
+			esc_url( MHM_Admin::page_url() ),
+			esc_html__( 'Go to Hub Manager', 'mavo-hub-manager' )
+		);
+
+		echo '<h2 class="nav-tab-wrapper mhm-tabs">';
+		foreach ( self::tabs() as $slug => $label ) {
+			printf(
+				'<a class="nav-tab%s" href="%s">%s</a>',
+				$slug === $context['tab'] ? ' nav-tab-active' : '',
+				esc_url( self::page_url( [ 'tab' => $slug ] ) ),
+				esc_html( $label )
+			);
+		}
+		echo '</h2>';
+
+		switch ( $context['tab'] ) {
+			case 'linkback':
+				self::render_linkback( $context );
+				break;
+
+			case 'health':
+				self::render_health( $context );
+				break;
+
+			case 'errors':
+				self::render_errors( $context );
+				break;
+
+			default:
+				self::render_missing( $context );
+		}
+
+		echo '</div>';
+	}
+
+	/* -------------------------------------------------------------- filters */
+
+	/** Open a GET filter form that keeps the current tab. */
+	private static function open_filters( array $context ): void {
+		echo '<form method="get" class="mhm-filters">';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
+		echo '<input type="hidden" name="tab" value="' . esc_attr( $context['tab'] ) . '" />';
+	}
+
+	private static function select( string $name, array $options, string $current, string $label ): void {
+		printf( '<label class="mhm-field"><span class="screen-reader-text">%s</span><select name="%s">', esc_html( $label ), esc_attr( $name ) );
+		foreach ( $options as $value => $option_label ) {
+			printf(
+				'<option value="%s" %s>%s</option>',
+				esc_attr( (string) $value ),
+				selected( $current, (string) $value, false ),
+				esc_html( (string) $option_label )
+			);
+		}
+		echo '</select></label> ';
+	}
+
+	private static function language_select( array $context ): void {
+		$languages = self::languages();
+		if ( ! $languages ) {
+			return;
+		}
+
+		$options = [ '' => __( 'All languages', 'mavo-hub-manager' ) ];
+		foreach ( $languages as $lang ) {
+			$options[ $lang ] = $lang;
+		}
+
+		self::select( 'lang', $options, $context['lang'], __( 'Language', 'mavo-hub-manager' ) );
+	}
+
+	private static function post_type_select( array $context ): void {
+		self::select(
+			'ptype',
+			[
+				'any'  => __( 'Posts and pages', 'mavo-hub-manager' ),
+				'post' => __( 'Posts only', 'mavo-hub-manager' ),
+				'page' => __( 'Pages only', 'mavo-hub-manager' ),
+			],
+			$context['ptype'],
+			__( 'Post type', 'mavo-hub-manager' )
+		);
+	}
+
+	private static function close_filters( array $context ): void {
+		echo '<button type="submit" class="button">' . esc_html__( 'Apply', 'mavo-hub-manager' ) . '</button> ';
+		echo '<a class="button-link" href="' . esc_url( self::page_url( [ 'tab' => $context['tab'] ] ) ) . '">' . esc_html__( 'Reset', 'mavo-hub-manager' ) . '</a>';
+		echo '</form>';
+	}
+
+	/* ------------------------------------------------- 1. posts without a hub */
+
+	private static function render_missing( array $context ): void {
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Posts without a hub', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html(
+			sprintf(
+				/* translators: %s: views meta key */
+				__( 'Posts and pages with no primary hub of the chosen kind, most viewed first (meta key "%s"; posts with no counter yet sort last). Posts that are themselves hubs of that kind are hidden, because a top-level hub legitimately has no parent.', 'mavo-hub-manager' ),
+				MHM_Audit::views_meta_key()
+			)
+		) . '</p>';
+
+		self::open_filters( $context );
+		self::select(
+			'mode',
+			[
+				'geo'   => __( 'Missing geographic hub', 'mavo-hub-manager' ),
+				'theme' => __( 'Missing thematic hub', 'mavo-hub-manager' ),
+				'both'  => __( 'Missing both hubs', 'mavo-hub-manager' ),
+				'any'   => __( 'Missing at least one hub', 'mavo-hub-manager' ),
+			],
+			$context['mode'],
+			__( 'What is missing', 'mavo-hub-manager' )
+		);
+		self::language_select( $context );
+		self::post_type_select( $context );
+		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
+		printf(
+			'<input type="search" name="s" value="%s" placeholder="%s" /> ',
+			esc_attr( $context['s'] ),
+			esc_attr__( 'Search titles…', 'mavo-hub-manager' )
+		);
+		self::close_filters( $context );
+
+		$report = MHM_Audit::missing_hub(
+			[
+				'mode'      => $context['mode'],
+				'lang'      => $context['lang'],
+				'post_type' => $context['ptype'],
+				'status'    => $context['status'],
+				'paged'     => $context['paged'],
+				'search'    => $context['s'],
+			]
+		);
+
+		printf(
+			'<p><strong>%s</strong></p>',
+			esc_html(
+				sprintf(
+					/* translators: %d: number of posts */
+					_n( '%d post or page has no hub with these filters.', '%d posts and pages have no hub with these filters.', $report['total'], 'mavo-hub-manager' ),
+					$report['total']
+				)
+			)
+		);
+
+		if ( ! $report['rows'] ) {
+			echo '<p class="mhm-muted">' . esc_html__( 'Nothing to show. Either everything is assigned, or the filters are too narrow.', 'mavo-hub-manager' ) . '</p></div>';
+
+			return;
+		}
+
+		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<th>' . esc_html__( 'ID', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Title', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Post type', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Status', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Views', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Primary geographic hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Primary thematic hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Actions', 'mavo-hub-manager' ) . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach ( $report['rows'] as $post_id ) {
+			$post = MHM_Model::get_eligible_post( (int) $post_id );
+			if ( ! $post ) {
+				continue;
+			}
+
+			$views = MHM_Audit::get_views( (int) $post_id );
+
+			echo '<tr>';
+			echo '<td>' . (int) $post_id . '</td>';
+			echo '<td>' . MHM_Admin::post_link( (int) $post_id ) . ' ' . MHM_Admin::type_badge( MHM_Model::get_hub_type( (int) $post_id ) ) . '</td>';
+			echo '<td>' . esc_html( $post->post_type ) . '</td>';
+			echo '<td>' . esc_html( $post->post_status ) . '</td>';
+			echo '<td>' . MHM_Admin::lang_cell( (int) $post_id ) . '</td>';
+			echo '<td class="mhm-col-num">' . ( null === $views ? '<span class="mhm-muted">—</span>' : esc_html( number_format_i18n( $views ) ) ) . '</td>';
+			echo '<td>' . MHM_Admin::post_link( MHM_Model::get_primary_hub( (int) $post_id, 'geo' ) ) . '</td>';
+			echo '<td>' . MHM_Admin::post_link( MHM_Model::get_primary_hub( (int) $post_id, 'theme' ) ) . '</td>';
+			echo '<td><a class="button button-small" href="' . esc_url( (string) get_edit_post_link( (int) $post_id ) ) . '">' . esc_html__( 'Edit', 'mavo-hub-manager' ) . '</a> ';
+			echo '<a class="button button-small" href="' . esc_url( (string) get_permalink( (int) $post_id ) ) . '">' . esc_html__( 'View', 'mavo-hub-manager' ) . '</a></td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table>';
+
+		self::render_pagination( $context, $report['paged'], $report['pages'] );
+
+		echo '<p class="description">' . esc_html__( 'To assign hubs, open the hub in Tools → Hub Manager and use its link scanner or its manual "Add child" search. Assignment is never done from this report.', 'mavo-hub-manager' ) . '</p>';
+		echo '</div>';
+	}
+
+	private static function render_pagination( array $context, int $paged, int $pages ): void {
+		if ( $pages < 2 ) {
+			return;
+		}
+
+		$link = static function ( int $page ) use ( $context ): string {
+			return self::page_url( array_merge( $context, [ 'paged' => $page ] ) );
+		};
+
+		echo '<p class="mhm-pagination">';
+		if ( $paged > 1 ) {
+			echo '<a class="button" href="' . esc_url( $link( $paged - 1 ) ) . '">' . esc_html__( '‹ Previous', 'mavo-hub-manager' ) . '</a> ';
+		}
+		printf(
+			'<span class="mhm-muted">%s</span> ',
+			esc_html(
+				sprintf(
+					/* translators: 1: current page, 2: total pages */
+					__( 'Page %1$d of %2$d', 'mavo-hub-manager' ),
+					$paged,
+					$pages
+				)
+			)
+		);
+		if ( $paged < $pages ) {
+			echo '<a class="button" href="' . esc_url( $link( $paged + 1 ) ) . '">' . esc_html__( 'Next ›', 'mavo-hub-manager' ) . '</a>';
+		}
+		echo '</p>';
+	}
+
+	/* --------------------------------------------- 2. no link back to the hub */
+
+	private static function render_linkback( array $context ): void {
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Children with no link back to their hub', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'A child whose primary hub is set but whose own content never points at that hub. Both an <a href> and a link-back shortcode count as a link: a post carrying [mavo_hub_strip slug="…"] that resolves to its hub does not appear here.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'This report reads post content, so it works through the assigned children one batch at a time, most viewed first.', 'mavo-hub-manager' ) . '</p>';
+
+		self::open_filters( $context );
+		self::select(
+			'ltype',
+			[
+				'any'   => __( 'Both relationship types', 'mavo-hub-manager' ),
+				'geo'   => __( 'Geographic relationships', 'mavo-hub-manager' ),
+				'theme' => __( 'Thematic relationships', 'mavo-hub-manager' ),
+			],
+			$context['ltype'],
+			__( 'Relationship type', 'mavo-hub-manager' )
+		);
+		self::language_select( $context );
+		self::post_type_select( $context );
+		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
+		self::close_filters( $context );
+
+		$report = MHM_Audit::no_link_back(
+			[
+				'type'      => $context['ltype'],
+				'lang'      => $context['lang'],
+				'post_type' => $context['ptype'],
+				'status'    => $context['status'],
+				'offset'    => $context['offset'],
+			]
+		);
+
+		$first = $report['scanned'] ? $report['offset'] + 1 : $report['offset'];
+
+		printf(
+			'<p><strong>%s</strong> %s</p>',
+			esc_html(
+				sprintf(
+					/* translators: %d: number of relationships with no link back */
+					_n( '%d relationship with no link back in this batch.', '%d relationships with no link back in this batch.', count( $report['rows'] ), 'mavo-hub-manager' ),
+					count( $report['rows'] )
+				)
+			),
+			esc_html(
+				sprintf(
+					/* translators: 1: first child, 2: last child, 3: total assigned children, 4: linked count */
+					__( 'Checked children %1$d–%2$d of %3$d assigned; %4$d already link back.', 'mavo-hub-manager' ),
+					$first,
+					$report['offset'] + $report['scanned'],
+					$report['total'],
+					$report['linked']
+				)
+			)
+		);
+
+		if ( $report['rows'] ) {
+			echo '<table class="widefat striped mhm-table"><thead><tr>';
+			echo '<th>' . esc_html__( 'Child', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+			echo '<th class="mhm-col-num">' . esc_html__( 'Views', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Relationship', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Primary hub', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'State', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Suggested shortcode', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Actions', 'mavo-hub-manager' ) . '</th>';
+			echo '</tr></thead><tbody>';
+
+			foreach ( $report['rows'] as $row ) {
+				$child = (int) $row['child'];
+				$hub   = (int) $row['hub'];
+
+				echo '<tr>';
+				echo '<td>' . MHM_Admin::post_link( $child ) . '</td>';
+				echo '<td>' . MHM_Admin::lang_cell( $child ) . '</td>';
+				echo '<td class="mhm-col-num">' . ( null === $row['views'] ? '<span class="mhm-muted">—</span>' : esc_html( number_format_i18n( (int) $row['views'] ) ) ) . '</td>';
+				echo '<td>' . MHM_Admin::type_badge( (string) $row['type'] ) . '</td>';
+				echo '<td>' . MHM_Admin::post_link( $hub ) . ' ' . MHM_Admin::lang_cell( $hub ) . '</td>';
+				echo '<td>' . self::linkback_state( $row ) . '</td>';
+				echo '<td>' . self::shortcode_hint( $hub, (bool) $row['missing'] ) . '</td>';
+				echo '<td><a class="button button-small" href="' . esc_url( (string) get_edit_post_link( $child ) ) . '">' . esc_html__( 'Edit child', 'mavo-hub-manager' ) . '</a></td>';
+				echo '</tr>';
+			}
+
+			echo '</tbody></table>';
+		} else {
+			echo '<p class="mhm-muted">' . esc_html__( 'Every child in this batch links back to its hub.', 'mavo-hub-manager' ) . '</p>';
+		}
+
+		self::render_batch_nav( $context, $report );
+
+		echo '<p class="description">' . esc_html__( 'Nothing is changed by this report. A missing link back is an editorial gap, not a broken relationship: the stored primary hub stays the source of truth.', 'mavo-hub-manager' ) . '</p>';
+		echo '</div>';
+	}
+
+	private static function linkback_state( array $row ): string {
+		if ( ! empty( $row['missing'] ) ) {
+			return '<span class="mhm-state mhm-state-conflict"><span aria-hidden="true">×</span> ' . esc_html__( 'Hub missing', 'mavo-hub-manager' ) . '</span>';
+		}
+
+		if ( MHM_Audit::LINK_ANCESTOR === $row['via'] ) {
+			return '<span class="mhm-state mhm-state-crosslang"><span aria-hidden="true">↗</span> ' . esc_html__( 'Ancestor only', 'mavo-hub-manager' ) . '</span> '
+				. MHM_Admin::post_link( (int) $row['ancestor'] );
+		}
+
+		return '<span class="mhm-state mhm-state-conflict"><span aria-hidden="true">○</span> ' . esc_html__( 'No link back', 'mavo-hub-manager' ) . '</span>';
+	}
+
+	/** A ready-to-paste [mavo_hub_strip] for this hub, built from its permalink path. */
+	private static function shortcode_hint( int $hub_id, bool $missing ): string {
+		if ( $missing ) {
+			return '<span class="mhm-muted">—</span>';
+		}
+
+		$path = trim( (string) wp_parse_url( (string) get_permalink( $hub_id ), PHP_URL_PATH ), '/' );
+		if ( '' === $path ) {
+			return '<span class="mhm-muted">—</span>';
+		}
+
+		$snippet = sprintf(
+			'[mavo_hub_strip slug="%s" text="{%s}"]',
+			$path,
+			(string) get_the_title( $hub_id )
+		);
+
+		return '<code class="mhm-snippet">' . esc_html( $snippet ) . '</code>';
+	}
+
+	private static function render_batch_nav( array $context, array $report ): void {
+		$batch = (int) $report['batch'];
+		$next  = (int) $report['offset'] + $batch;
+
+		echo '<p class="mhm-pagination">';
+
+		if ( $report['offset'] > 0 ) {
+			printf(
+				'<a class="button" href="%s">%s</a> ',
+				esc_url( self::page_url( array_merge( $context, [ 'offset' => max( 0, (int) $report['offset'] - $batch ) ] ) ) ),
+				esc_html__( '‹ Previous batch', 'mavo-hub-manager' )
+			);
+		}
+
+		if ( $next < (int) $report['total'] ) {
+			printf(
+				'<a class="button button-primary" href="%s">%s</a>',
+				esc_url( self::page_url( array_merge( $context, [ 'offset' => $next ] ) ) ),
+				esc_html(
+					sprintf(
+						/* translators: %d: batch size */
+						__( 'Check next %d ›', 'mavo-hub-manager' ),
+						$batch
+					)
+				)
+			);
+		} else {
+			echo '<span class="mhm-muted">' . esc_html__( 'End of the list.', 'mavo-hub-manager' ) . '</span>';
+		}
+
+		echo '</p>';
+	}
+
+	/* ------------------------------------------------------- 3. hub health */
+
+	private static function render_health( array $context ): void {
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Hub health', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'Every hub with its derived child count, its own parent hub and any hierarchy problem. Hubs with problems, then hubs with the fewest children, come first.', 'mavo-hub-manager' ) . '</p>';
+
+		self::open_filters( $context );
+		self::select(
+			'htype',
+			[
+				''      => __( 'All hub types', 'mavo-hub-manager' ),
+				'geo'   => __( 'Geographic', 'mavo-hub-manager' ),
+				'theme' => __( 'Thematic', 'mavo-hub-manager' ),
+			],
+			$context['htype'],
+			__( 'Hub type', 'mavo-hub-manager' )
+		);
+		self::language_select( $context );
+		printf(
+			'<input type="search" name="s" value="%s" placeholder="%s" /> ',
+			esc_attr( $context['s'] ),
+			esc_attr__( 'Filter hubs…', 'mavo-hub-manager' )
+		);
+		printf(
+			'<label class="mhm-field"><input type="checkbox" name="stale" value="1" %s /> %s</label> ',
+			checked( $context['stale'], '1', false ),
+			esc_html__( 'Include link analysis (reads every hub\'s content)', 'mavo-hub-manager' )
+		);
+		self::close_filters( $context );
+
+		$report  = MHM_Audit::hub_health(
+			[
+				'type'   => $context['htype'],
+				'lang'   => $context['lang'],
+				'search' => $context['s'],
+				'stale'  => '1' === $context['stale'],
+			]
+		);
+		$summary = $report['summary'];
+
+		echo '<ul class="mhm-summary">';
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Hubs', 'mavo-hub-manager' ), (int) $summary['hubs'] );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Geographic', 'mavo-hub-manager' ), (int) $summary['geo'] );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Thematic', 'mavo-hub-manager' ), (int) $summary['theme'] );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Without children', 'mavo-hub-manager' ), (int) $summary['no_children'] );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Top-level', 'mavo-hub-manager' ), (int) $summary['top_level'] );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'With problems', 'mavo-hub-manager' ), (int) $summary['with_issues'] );
+		if ( $summary['stale_scanned'] ) {
+			printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Stale assignments', 'mavo-hub-manager' ), (int) $summary['stale'] );
+			printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Linked but unassigned', 'mavo-hub-manager' ), (int) $summary['unassigned'] );
+		}
+		echo '</ul>';
+
+		if ( ! $report['rows'] ) {
+			echo '<p class="mhm-muted">' . esc_html__( 'No hubs match these filters.', 'mavo-hub-manager' ) . '</p></div>';
+
+			return;
+		}
+
+		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<th>' . esc_html__( 'Hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Hub type', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Status', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Parent hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Depth', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Children', 'mavo-hub-manager' ) . '</th>';
+		if ( $summary['stale_scanned'] ) {
+			echo '<th class="mhm-col-num">' . esc_html__( 'Stale', 'mavo-hub-manager' ) . '</th>';
+			echo '<th class="mhm-col-num">' . esc_html__( 'Linked, unassigned', 'mavo-hub-manager' ) . '</th>';
+		}
+		echo '<th>' . esc_html__( 'Problems', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Actions', 'mavo-hub-manager' ) . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach ( $report['rows'] as $row ) {
+			$hub_id = (int) $row['hub'];
+
+			echo '<tr>';
+			echo '<td>' . MHM_Admin::post_link( $hub_id ) . '</td>';
+			echo '<td>' . MHM_Admin::type_badge( (string) $row['type'] ) . '</td>';
+			echo '<td>' . esc_html( (string) $row['status'] ) . '</td>';
+			echo '<td>' . MHM_Admin::lang_cell( $hub_id ) . '</td>';
+			echo '<td>' . ( $row['parent'] ? MHM_Admin::post_link( (int) $row['parent'] ) : '<span class="mhm-muted">' . esc_html__( 'top-level', 'mavo-hub-manager' ) . '</span>' ) . '</td>';
+			echo '<td class="mhm-col-num">' . (int) $row['depth'] . '</td>';
+			echo '<td class="mhm-col-num">' . ( $row['children'] ? (int) $row['children'] : '<span class="mhm-warning-text">0</span>' ) . '</td>';
+
+			if ( $summary['stale_scanned'] ) {
+				echo '<td class="mhm-col-num">' . ( null === $row['stale'] ? '<span class="mhm-muted">—</span>' : (int) $row['stale'] ) . '</td>';
+				echo '<td class="mhm-col-num">' . ( null === $row['unassigned'] ? '<span class="mhm-muted">—</span>' : (int) $row['unassigned'] ) . '</td>';
+			}
+
+			echo '<td>';
+			if ( $row['issues'] ) {
+				echo '<ul class="mhm-issues">';
+				foreach ( $row['issues'] as $issue ) {
+					printf(
+						'<li class="%s">%s</li>',
+						'error' === $issue['level'] ? 'mhm-error-text' : 'mhm-warning-text',
+						esc_html( $issue['message'] )
+					);
+				}
+				echo '</ul>';
+			} else {
+				echo '<span class="mhm-muted">' . esc_html__( 'None', 'mavo-hub-manager' ) . '</span>';
+			}
+			echo '</td>';
+
+			echo '<td><a class="button button-small" href="' . esc_url( MHM_Admin::page_url( [ 'hub' => $hub_id ] ) ) . '">' . esc_html__( 'Manage', 'mavo-hub-manager' ) . '</a> ';
+			echo '<a class="button button-small" href="' . esc_url( MHM_Admin::page_url( [ 'hub' => $hub_id, 'scan' => 1 ] ) ) . '">' . esc_html__( 'Scan', 'mavo-hub-manager' ) . '</a></td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table></div>';
+	}
+
+	/* ---------------------------------------------- 4. relationship errors */
+
+	private static function render_errors( array $context ): void {
+		$run = '1' === $context['run'];
+
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Relationship errors', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'On demand only: inspects every post and page carrying a primary-hub value. Nothing is repaired automatically.', 'mavo-hub-manager' ) . '</p>';
+
+		printf(
+			'<p><a class="button button-secondary" href="%s">%s</a></p>',
+			esc_url( self::page_url( array_merge( $context, [ 'run' => 1 ] ) ) ),
+			esc_html__( 'Run relationship diagnostics', 'mavo-hub-manager' )
+		);
+
+		if ( ! $run ) {
+			echo '</div>';
+
+			return;
+		}
+
+		$report = MHM_Model::run_diagnostics();
+
+		printf(
+			'<p>%s</p>',
+			esc_html(
+				sprintf(
+					/* translators: %d: number of relationships inspected */
+					__( '%d stored relationship(s) inspected.', 'mavo-hub-manager' ),
+					$report['scanned']
+				)
+			)
+		);
+
+		$groups = [
+			'missing_target' => __( 'Primary hub points to a missing object', 'mavo-hub-manager' ),
+			'wrong_hub_type' => __( 'Primary hub has the wrong hub type', 'mavo-hub-manager' ),
+			'self_reference' => __( 'Self-references', 'mavo-hub-manager' ),
+			'cycle'          => __( 'Cycles', 'mavo-hub-manager' ),
+			'cross_language' => __( 'Cross-language relationships', 'mavo-hub-manager' ),
+		];
+
+		foreach ( $groups as $key => $label ) {
+			$rows = $report[ $key ];
+
+			printf( '<h3>%s <span class="mhm-count">%d</span></h3>', esc_html( $label ), count( $rows ) );
+
+			if ( ! $rows ) {
+				echo '<p class="mhm-muted">' . esc_html__( 'None.', 'mavo-hub-manager' ) . '</p>';
+				continue;
+			}
+
+			echo '<table class="widefat striped mhm-table"><thead><tr>';
+			echo '<th>' . esc_html__( 'Child', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Relationship', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Stored hub', 'mavo-hub-manager' ) . '</th>';
+			echo '<th>' . esc_html__( 'Action', 'mavo-hub-manager' ) . '</th>';
+			echo '</tr></thead><tbody>';
+
+			foreach ( $rows as $row ) {
+				echo '<tr>';
+				echo '<td>' . MHM_Admin::post_link( (int) $row['child'] ) . ' ' . MHM_Admin::lang_cell( (int) $row['child'] ) . '</td>';
+				echo '<td>' . MHM_Admin::type_badge( (string) $row['type'] ) . '</td>';
+				echo '<td>' . MHM_Admin::post_link( (int) $row['hub'] ) . ' ' . MHM_Admin::lang_cell( (int) $row['hub'] ) . '</td>';
+				echo '<td>';
+				self::render_remove_form( (int) $row['child'], (string) $row['type'], $context );
+				echo '</td>';
+				echo '</tr>';
+			}
+
+			echo '</tbody></table>';
+		}
+
+		echo '</div>';
+	}
+
+	/** One-button POST form removing a single stored relationship. */
+	private static function render_remove_form( int $child_id, string $type, array $context ): void {
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" class="mhm-inline-form">';
+		wp_nonce_field( self::ACTION );
+		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '" />';
+		echo '<input type="hidden" name="child" value="' . esc_attr( (string) $child_id ) . '" />';
+		echo '<input type="hidden" name="type" value="' . esc_attr( $type ) . '" />';
+
+		foreach ( $context as $key => $value ) {
+			if ( '' === $value || null === $value ) {
+				continue;
+			}
+			printf( '<input type="hidden" name="%s" value="%s" />', esc_attr( (string) $key ), esc_attr( (string) $value ) );
+		}
+
+		printf(
+			'<button type="submit" class="button button-small button-link-delete" data-mhm-confirm="%s">%s</button>',
+			esc_attr__( 'Remove this stored relationship?', 'mavo-hub-manager' ),
+			esc_html__( 'Remove relationship', 'mavo-hub-manager' )
+		);
+		echo '</form>';
+	}
+}

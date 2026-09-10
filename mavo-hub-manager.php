@@ -21,11 +21,14 @@ require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-model.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-scanner.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-ajax.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-admin.php';
+require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit.php';
+require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit-admin.php';
 
 add_action( 'plugins_loaded', static function () {
 	load_plugin_textdomain( 'mavo-hub-manager', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 
 	MHM_Admin::init();
+	MHM_Audit_Admin::init();
 	MHM_Ajax::init();
 } );
 
@@ -96,4 +99,23 @@ function mavo_would_create_hub_cycle( int $child_id, int $proposed_hub_id, strin
 /** Classified internal-link scan of a hub's stored post_content. */
 function mavo_scan_hub_internal_links( int $hub_id ): array {
 	return MHM_Scanner::scan( $hub_id );
+}
+
+/**
+ * Does this post link back to the hub of the given type that owns it?
+ *
+ * Counts both a real <a href> and a link-back shortcode such as
+ * [mavo_hub_strip slug="france"], which renders a link on the frontend only.
+ * Returns null when the post has no primary hub of that type.
+ */
+function mavo_post_links_back_to_hub( int $post_id, string $type ): ?bool {
+	$hub_id = MHM_Model::get_primary_hub( $post_id, $type );
+
+	if ( null === $hub_id ) {
+		return null;
+	}
+
+	$status = MHM_Audit::link_back_status( $post_id, $hub_id, $type );
+
+	return (bool) $status['linked'];
 }
