@@ -43,7 +43,10 @@ ok( str_contains( $missing, 'nav-tab-active' ), 'the active tab is marked' );
 $linkback = render_audit( [ 'tab' => 'linkback' ] );
 ok( str_contains( $linkback, 'no link back to their hub' ), 'the link-back tab renders' );
 ok( str_contains( $linkback, 'Le Louvre' ), 'a child that never links back is listed' );
-ok( str_contains( $linkback, 'mavo_hub_strip slug="paris-en-famille"' ), 'a ready-to-paste shortcode is suggested' );
+ok(
+	str_contains( $linkback, 'mavo_hub_strip text="{geo:Paris en famille}"' ),
+	'the suggested shortcode names the hub type, so it follows the stored relationship'
+);
 
 $health = render_audit( [ 'tab' => 'health' ] );
 ok( str_contains( $health, 'Hub health' ), 'the health tab renders' );

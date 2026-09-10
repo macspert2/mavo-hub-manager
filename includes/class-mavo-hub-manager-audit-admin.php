@@ -429,7 +429,7 @@ class MHM_Audit_Admin {
 	private static function render_linkback( array $context ): void {
 		echo '<div class="mhm-panel">';
 		echo '<h2>' . esc_html__( 'Children with no link back to their hub', 'mavo-hub-manager' ) . '</h2>';
-		echo '<p class="description">' . esc_html__( 'A child whose primary hub is set but whose own content never points at that hub. Both an <a href> and a link-back shortcode count as a link: a post carrying [mavo_hub_strip slug="…"] that resolves to its hub does not appear here.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'A child whose primary hub is set but whose own content never points at that hub. Both an <a href> and a link-back shortcode count as a link: a post carrying [mavo_hub_strip] — with a slug, with a {geo:…} or {theme:…} marker, or bare, in which case it follows the post\'s own primary hubs — does not appear here.', 'mavo-hub-manager' ) . '</p>';
 		echo '<p class="description">' . esc_html__( 'This report reads post content, so it works through the assigned children one batch at a time. Links are matched against the hub\'s own permalink, so the check itself costs no database queries.', 'mavo-hub-manager' ) . '</p>';
 
 		self::open_filters( $context );
@@ -507,7 +507,7 @@ class MHM_Audit_Admin {
 				echo '<td>' . MHM_Admin::type_badge( (string) $row['type'] ) . '</td>';
 				echo '<td>' . MHM_Admin::post_link( $hub ) . ' ' . MHM_Admin::lang_cell( $hub ) . '</td>';
 				echo '<td>' . self::linkback_state( $row ) . '</td>';
-				echo '<td>' . self::shortcode_hint( $hub, (bool) $row['missing'] ) . '</td>';
+				echo '<td>' . self::shortcode_hint( $hub, (string) $row['type'], (bool) $row['missing'] ) . '</td>';
 				echo '<td><a class="button button-small" href="' . esc_url( (string) get_edit_post_link( $child ) ) . '">' . esc_html__( 'Edit child', 'mavo-hub-manager' ) . '</a></td>';
 				echo '</tr>';
 			}
@@ -537,22 +537,25 @@ class MHM_Audit_Admin {
 		return '<span class="mhm-state mhm-state-conflict"><span aria-hidden="true">○</span> ' . esc_html__( 'No link back', 'mavo-hub-manager' ) . '</span>';
 	}
 
-	/** A ready-to-paste [mavo_hub_strip] for this hub, built from its permalink path. */
-	private static function shortcode_hint( int $hub_id, bool $missing ): string {
-		if ( $missing ) {
+	/**
+	 * A ready-to-paste [mavo_hub_strip] for this hub.
+	 *
+	 * The relationship is already stored, so the snippet names the hub type
+	 * rather than a slug: the strip follows the child's own primary hub, and
+	 * keeps following it if the hub is later reassigned. The hub title is only
+	 * a starting anchor — the editor is expected to reword it.
+	 */
+	private static function shortcode_hint( int $hub_id, string $type, bool $missing ): string {
+		if ( $missing || ! MHM_Model::is_valid_type( $type ) ) {
 			return '<span class="mhm-muted">—</span>';
 		}
 
-		$path = trim( (string) wp_parse_url( (string) get_permalink( $hub_id ), PHP_URL_PATH ), '/' );
-		if ( '' === $path ) {
+		$title = trim( (string) get_the_title( $hub_id ) );
+		if ( '' === $title ) {
 			return '<span class="mhm-muted">—</span>';
 		}
 
-		$snippet = sprintf(
-			'[mavo_hub_strip slug="%s" text="{%s}"]',
-			$path,
-			(string) get_the_title( $hub_id )
-		);
+		$snippet = sprintf( '[mavo_hub_strip text="{%s:%s}"]', $type, $title );
 
 		return '<code class="mhm-snippet">' . esc_html( $snippet ) . '</code>';
 	}

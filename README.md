@@ -150,9 +150,34 @@ add_filter(
 );
 ```
 
+**The slug is optional now that the hierarchy exists**, and a slugless strip is resolved
+against the child's *own* primary hubs rather than a path. Reading only `slug` would report
+exactly those posts as missing a link back, so the audit reads which hubs the strip means
+the same way the shortcode does — still without rendering anything:
+
+```
+[mavo_hub_strip]                             both primary hubs
+[mavo_hub_strip hub="geo"]                   the geographic hub only
+[mavo_hub_strip text="…{geo:…} … {theme:…}"] the types its markers name
+```
+
+In sentence mode the `{geo:…}` / `{theme:…}` markers decide, not the `hub` attribute. A
+slugless occurrence contributes `id:<hub>` keys, so it matches the stored relationship
+directly and keeps matching if the hub is later reassigned. Other shortcodes with an
+optional target opt in by tag:
+
+```php
+add_filter(
+	'mavo_hub_manager_link_back_hub_shortcodes',
+	fn( $tags ) => [ ...$tags, 'my_hub_link' ]
+);
+```
+
 A link to an *ancestor* of the hub (Paris instead of Paris en famille) does not count as a
 link back, but is reported as **Ancestor only** so the difference is visible. Each row
-offers a ready-to-paste `[mavo_hub_strip]` for the hub in question.
+offers a ready-to-paste `[mavo_hub_strip text="{geo:Paris en famille}"]` for the hub in
+question — typed rather than slugged, so the pasted strip follows the relationship the
+report is about.
 
 *No link back* reads post content, so it works through the assigned children one batch at
 a time (100 per pass, most viewed first) rather than scanning the whole site in one
@@ -203,7 +228,8 @@ admin can have side effects and pollute global `$post`, and the scan must stay
 deterministic. Links that only exist in shortcode output are not discovered by the hub's
 link scanner — assign those children manually. The audit's link-back check is the one
 exception: it parses known link-back shortcodes (`mavo_hub_strip`) as text and resolves
-their `slug`, still without rendering anything.
+either their `slug` or, when there is none, the child's own primary hubs — still without
+rendering anything.
 
 ## Tests
 
@@ -221,7 +247,7 @@ No WordPress required; the harness stubs what the model and scanner call.
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
 | `test-admin.php` | admin-post routing, confirmations, page rendering |
-| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip`, ancestors), views meta, hub health |
+| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, ancestors), views meta, hub health |
 | `test-audit-admin.php` | every audit tab renders, writes nothing, and removal redirects back |
 
 ## Out of scope for V0

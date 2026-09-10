@@ -84,6 +84,61 @@ class MHM_Audit {
 		);
 	}
 
+	/**
+	 * Link-back shortcodes whose target attribute is optional, as a tag list.
+	 *
+	 * Since the hub hierarchy exists, `[mavo_hub_strip]` needs no slug: it
+	 * links to the post's own primary hubs. Reading only the slug attribute
+	 * would report exactly those posts as missing a link back, so a slugless
+	 * occurrence is resolved against the child's own hub meta instead.
+	 *
+	 * Which hubs it points at is read from the shortcode the same way the
+	 * shortcode itself reads it, still without rendering anything:
+	 *
+	 *   [mavo_hub_strip]                     both primary hubs
+	 *   [mavo_hub_strip hub="geo"]           the geographic hub only
+	 *   [mavo_hub_strip text="…{geo:…}…"]    the types its markers name
+	 *
+	 * @return string[]
+	 */
+	public static function link_back_hub_shortcodes(): array {
+		return array_values( array_filter( array_map(
+			'strval',
+			(array) apply_filters( 'mavo_hub_manager_link_back_hub_shortcodes', [ 'mavo_hub_strip' ] )
+		) ) );
+	}
+
+	/**
+	 * The hub types one slugless link-back shortcode points at.
+	 *
+	 * @param array $atts Parsed shortcode attributes.
+	 * @return string[] Any of 'geo', 'theme'.
+	 */
+	public static function shortcode_hub_types( array $atts ): array {
+		$text = isset( $atts['text'] ) ? (string) $atts['text'] : '';
+
+		// Sentence mode: the {geo:…} / {theme:…} markers decide, not `hub`.
+		if ( '' !== trim( $text ) ) {
+			$found = [];
+
+			if ( preg_match_all( '/\{(geo|theme)\s*:/i', $text, $matches ) ) {
+				foreach ( $matches[1] as $marker ) {
+					$found[ strtolower( (string) $marker ) ] = true;
+				}
+			}
+
+			return array_keys( $found );
+		}
+
+		$hub = isset( $atts['hub'] ) ? strtolower( trim( (string) $atts['hub'] ) ) : '';
+
+		if ( MHM_Model::is_valid_type( $hub ) ) {
+			return [ $hub ];
+		}
+
+		return ( '' === $hub || 'both' === $hub ) ? MHM_Model::types() : [];
+	}
+
 	/* ------------------------------------------------------- link matching */
 
 	/**
@@ -211,7 +266,7 @@ class MHM_Audit {
 		}
 
 		$shortcode = [];
-		foreach ( self::shortcode_link_keys( $content ) as $key ) {
+		foreach ( self::shortcode_link_keys( $content, $post_id ) as $key ) {
 			$shortcode[ $key ] = true;
 		}
 
@@ -230,14 +285,19 @@ class MHM_Audit {
 	/**
 	 * Link keys referenced by link-back shortcodes in stored content.
 	 *
+	 * @param string $content Stored post content.
+	 * @param int    $post_id The post the content belongs to. Needed only to
+	 *                        resolve slugless shortcodes against its own hubs.
 	 * @return string[]
 	 */
-	public static function shortcode_link_keys( string $content ): array {
+	public static function shortcode_link_keys( string $content, int $post_id = 0 ): array {
 		if ( '' === trim( $content ) ) {
 			return [];
 		}
 
-		$keys = [];
+		$post_id   = absint( $post_id );
+		$implicit  = self::link_back_hub_shortcodes();
+		$keys      = [];
 
 		foreach ( self::link_back_shortcodes() as $tag => $attribute ) {
 			$tag       = (string) $tag;
@@ -252,11 +312,24 @@ class MHM_Audit {
 				continue;
 			}
 
+			$resolves_hubs = $post_id && in_array( $tag, $implicit, true );
+
 			foreach ( $matches[1] as $raw_atts ) {
 				$atts  = shortcode_parse_atts( $raw_atts );
-				$value = is_array( $atts ) && isset( $atts[ $attribute ] ) ? trim( (string) $atts[ $attribute ] ) : '';
+				$atts  = is_array( $atts ) ? $atts : [];
+				$value = isset( $atts[ $attribute ] ) ? trim( (string) $atts[ $attribute ] ) : '';
 
 				if ( '' === $value ) {
+					if ( $resolves_hubs ) {
+						foreach ( self::shortcode_hub_types( $atts ) as $type ) {
+							$hub_id = MHM_Model::get_primary_hub( $post_id, $type );
+
+							if ( $hub_id ) {
+								$keys[ 'id:' . (int) $hub_id ] = true;
+							}
+						}
+					}
+
 					continue;
 				}
 

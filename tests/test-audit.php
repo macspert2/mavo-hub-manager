@@ -71,6 +71,35 @@ is_same(
 
 is_same( [], MHM_Audit::shortcode_link_keys( 'No shortcode here.' ), 'plain content yields no shortcode targets' );
 
+/* ------------------------------------------ which hubs a slugless strip means */
+
+is_same( [ 'geo', 'theme' ], MHM_Audit::shortcode_hub_types( [] ), 'a bare strip means both primary hubs' );
+is_same( [ 'geo', 'theme' ], MHM_Audit::shortcode_hub_types( [ 'hub' => 'both' ] ), 'hub="both" means both' );
+is_same( [ 'geo' ], MHM_Audit::shortcode_hub_types( [ 'hub' => 'geo' ] ), 'hub="geo" means the geographic hub only' );
+is_same( [ 'theme' ], MHM_Audit::shortcode_hub_types( [ 'hub' => 'Theme' ] ), 'the hub attribute is case-insensitive' );
+is_same( [], MHM_Audit::shortcode_hub_types( [ 'hub' => 'nonsense' ] ), 'an unknown hub attribute points at nothing' );
+
+is_same(
+	[ 'geo' ],
+	MHM_Audit::shortcode_hub_types( [ 'text' => 'Voir aussi notre {geo:guide France}.' ] ),
+	'in sentence mode the markers decide, not the hub attribute'
+);
+is_same(
+	[ 'geo', 'theme' ],
+	MHM_Audit::shortcode_hub_types( [ 'text' => 'Voir {geo:la France} et {theme:nos city trips}.' ] ),
+	'both markers in one sentence are found'
+);
+is_same(
+	[ 'theme' ],
+	MHM_Audit::shortcode_hub_types( [ 'hub' => 'geo', 'text' => 'Voir {theme:nos city trips}.' ] ),
+	'a text attribute overrides the hub attribute'
+);
+is_same(
+	[],
+	MHM_Audit::shortcode_hub_types( [ 'text' => 'Voir aussi {Paris : la ville}.' ] ),
+	'an unnamed marker names no hub type'
+);
+
 /* ----------------------------------------------------------- link back to hub */
 
 reset_store();
@@ -113,8 +142,37 @@ mock_post( 24, [
 	'post_content' => '<p><a href="/paris-en-famille/#activites">Ancre</a></p>',
 ] );
 
-foreach ( [ 20, 21, 22, 23, 24 ] as $child ) {
+// A thematic hub alongside the geographic one, so a child can have both.
+mock_post( 4, [ 'post_type' => 'page', 'post_title' => 'City trips', 'post_name' => 'city-trips' ] );
+MHM_Model::set_hub_type( 4, 'theme' );
+
+mock_post( 25, [
+	'post_title'   => 'Slugless child',
+	'post_name'    => 'slugless-child',
+	'post_content' => '<p>Texte.</p>[mavo_hub_strip]',
+] );
+mock_post( 26, [
+	'post_title'   => 'Geo-only strip child',
+	'post_name'    => 'geo-only-strip-child',
+	'post_content' => '[mavo_hub_strip hub="geo"]',
+] );
+mock_post( 27, [
+	'post_title'   => 'Marker child',
+	'post_name'    => 'marker-child',
+	'post_content' => '[mavo_hub_strip text="Voir {geo:Paris en famille} et {theme:nos city trips}."]',
+] );
+mock_post( 28, [
+	'post_title'   => 'Theme-only strip child',
+	'post_name'    => 'theme-only-strip-child',
+	'post_content' => '[mavo_hub_strip hub="theme"]',
+] );
+
+foreach ( [ 20, 21, 22, 23, 24, 25, 26, 27, 28 ] as $child ) {
 	MHM_Model::set_primary_hub( $child, 3, 'geo' );
+}
+
+foreach ( [ 25, 26, 27, 28 ] as $child ) {
+	MHM_Model::set_primary_hub( $child, 4, 'theme' );
 }
 
 $anchor = MHM_Audit::link_back_status( 20, 3, 'geo' );
@@ -148,6 +206,58 @@ is_same(
 	'the report looks at the child\'s content, not the hub\'s'
 );
 
+/* --------------------------------- a slugless strip resolves the post's hubs */
+
+$slugless = MHM_Audit::link_back_status( 25, 3, 'geo' );
+is_same( true, $slugless['linked'], 'a bare [mavo_hub_strip] counts as a link back to the geographic hub' );
+is_same( MHM_Audit::LINK_SHORTCODE, $slugless['via'], 'the slugless strip is reported as a shortcode link' );
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 25, 4, 'theme' )['linked'],
+	'the same bare strip also links back to the thematic hub'
+);
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 26, 3, 'geo' )['linked'],
+	'hub="geo" links back to the geographic hub'
+);
+is_same(
+	false,
+	MHM_Audit::link_back_status( 26, 4, 'theme' )['linked'],
+	'hub="geo" does not claim a link back to the thematic hub'
+);
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 27, 3, 'geo' )['linked'],
+	'a {geo:...} marker links back to the geographic hub'
+);
+is_same(
+	true,
+	MHM_Audit::link_back_status( 27, 4, 'theme' )['linked'],
+	'a {theme:...} marker links back to the thematic hub'
+);
+
+is_same(
+	false,
+	MHM_Audit::link_back_status( 28, 3, 'geo' )['linked'],
+	'hub="theme" leaves the geographic hub unlinked'
+);
+is_same(
+	MHM_Audit::LINK_NONE,
+	MHM_Audit::link_back_status( 28, 3, 'geo' )['via'],
+	'the thematic-only strip is not mistaken for an ancestor link either'
+);
+
+// Without a post ID there is nothing to resolve the implicit target against.
+is_same(
+	[],
+	MHM_Audit::shortcode_link_keys( '[mavo_hub_strip]' ),
+	'a slugless strip yields no keys when no post is given'
+);
+
 /* ------------------------------------------------------------- views meta */
 
 update_post_meta( 20, 'views', '4200' );
@@ -160,9 +270,9 @@ is_same( 'views', MHM_Audit::views_meta_key(), 'the default ordering key is "vie
 
 $health = MHM_Audit::hub_health( [ 'stale' => true ] );
 
-is_same( 3, $health['summary']['hubs'], 'every marked hub appears in the health report' );
-is_same( 3, $health['summary']['geo'], 'all three are geographic' );
-is_same( 1, $health['summary']['top_level'], 'only France has no parent hub' );
+is_same( 4, $health['summary']['hubs'], 'every marked hub appears in the health report' );
+is_same( 3, $health['summary']['geo'], 'three of the four are geographic' );
+is_same( 2, $health['summary']['top_level'], 'France and City trips have no parent hub' );
 is_same( 0, $health['summary']['with_issues'], 'a clean hierarchy reports no problems' );
 
 $by_hub = [];
@@ -170,14 +280,14 @@ foreach ( $health['rows'] as $row ) {
 	$by_hub[ $row['hub'] ] = $row;
 }
 
-is_same( 5, $by_hub[3]['children'], 'direct children are counted from the children\'s own meta' );
+is_same( 9, $by_hub[3]['children'], 'direct children are counted from the children\'s own meta' );
 is_same( 2, $by_hub[3]['depth'], 'Paris en famille sits two levels below France' );
 is_same( 1, $by_hub[2]['parent'], 'Paris keeps France as its parent hub' );
 is_same( null, $by_hub[1]['parent'], 'France is top-level' );
 
 // "Paris en famille" has five assigned children but its own content links to none
 // of them: every relationship is stale from the hub's point of view.
-is_same( 5, $by_hub[3]['stale'], 'children the hub no longer links to are counted as stale' );
+is_same( 9, $by_hub[3]['stale'], 'children the hub no longer links to are counted as stale' );
 is_same( 0, $by_hub[3]['unassigned'], 'the hub links to nothing that is unassigned' );
 
 // A broken hierarchy surfaces as a problem on the hub row.
