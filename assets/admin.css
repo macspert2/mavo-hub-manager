@@ -1,0 +1,78 @@
+/* Hub Manager — admin only. Stays close to core WordPress admin styling. */
+
+.mhm-panel {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	margin: 16px 0;
+	padding: 12px 16px;
+}
+
+.mhm-panel > h2 { margin-top: 8px; }
+
+.mhm-help p { max-width: 60em; }
+
+.mhm-table { margin-top: 8px; }
+.mhm-table th, .mhm-table td { vertical-align: top; }
+.mhm-col-select { width: 70px; }
+
+.mhm-row-selected > td { background: #f0f6fc; }
+
+.mhm-muted { color: #646970; }
+.mhm-error-text { color: #b32d2e; font-weight: 600; }
+.mhm-warning-text { color: #8a6116; }
+
+.mhm-count {
+	background: #f0f0f1;
+	border-radius: 9px;
+	color: #2c3338;
+	font-size: 12px;
+	padding: 1px 8px;
+}
+
+/* Hub type and language badges — never colour alone, always a word. */
+.mhm-badge {
+	border-radius: 3px;
+	display: inline-block;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1.6;
+	padding: 0 6px;
+	text-transform: uppercase;
+}
+.mhm-badge-geo   { background: #e6f2e6; border: 1px solid #6a9a6a; color: #1e5c1e; }
+.mhm-badge-theme { background: #eae6f5; border: 1px solid #7f6aa8; color: #40306b; }
+.mhm-badge-lang  { background: #f0f0f1; border: 1px solid #a7aaad; color: #2c3338; }
+
+/* Scanner states carry an icon plus a label. */
+.mhm-state { font-weight: 600; white-space: nowrap; }
+.mhm-state-assigned   { color: #1e5c1e; }
+.mhm-state-unassigned { color: #2c3338; }
+.mhm-state-conflict   { color: #b32d2e; }
+.mhm-state-crosslang  { color: #8a6116; }
+.mhm-state-invalid    { color: #646970; }
+
+.mhm-props { border-collapse: collapse; margin: 8px 0 12px; }
+.mhm-props th { padding: 4px 16px 4px 0; text-align: left; white-space: nowrap; }
+.mhm-props td { padding: 4px 0; }
+
+.mhm-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.mhm-inline-form { display: inline-block; margin: 0; }
+
+.mhm-filters { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+
+.mhm-search-results { margin: 8px 0; max-width: 900px; }
+.mhm-search-list { margin: 0; }
+.mhm-search-list li {
+	border-bottom: 1px solid #f0f0f1;
+	margin: 0;
+	padding: 6px 0;
+}
+.mhm-search-title { font-weight: 600; }
+
+.mhm-groups { display: flex; flex-wrap: wrap; gap: 24px; }
+.mhm-group { flex: 1 1 260px; min-width: 260px; }
+.mhm-group h4 { margin-bottom: 4px; }
+.mhm-list { margin: 0; }
+.mhm-list li { margin-bottom: 6px; }
+
+.mhm-confirm form { margin-bottom: 8px; }
