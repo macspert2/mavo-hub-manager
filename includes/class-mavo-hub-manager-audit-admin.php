@@ -84,7 +84,7 @@ class MHM_Audit_Admin {
 		}
 
 		$redirect = [];
-		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'run' ] as $key ) {
+		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'run' ] as $key ) {
 			if ( isset( $_POST[ $key ] ) && '' !== $_POST[ $key ] ) {
 				$redirect[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
 			}
@@ -104,7 +104,7 @@ class MHM_Audit_Admin {
 		return [
 			'tab'    => isset( $tabs[ $tab ] ) ? $tab : 'missing',
 			'mode'   => isset( $_GET['mode'] ) ? sanitize_key( wp_unslash( $_GET['mode'] ) ) : 'geo',
-			'ltype'  => isset( $_GET['ltype'] ) ? sanitize_key( wp_unslash( $_GET['ltype'] ) ) : 'any',
+			'ltype'  => isset( $_GET['ltype'] ) && 'theme' === $_GET['ltype'] ? 'theme' : 'geo',
 			'htype'  => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
 			'lang'   => isset( $_GET['lang'] ) ? sanitize_key( wp_unslash( $_GET['lang'] ) ) : '',
 			'ptype'  => isset( $_GET['ptype'] ) ? sanitize_key( wp_unslash( $_GET['ptype'] ) ) : 'any',
@@ -113,6 +113,7 @@ class MHM_Audit_Admin {
 			'paged'  => isset( $_GET['paged'] ) ? max( 1, absint( wp_unslash( $_GET['paged'] ) ) ) : 1,
 			'offset' => isset( $_GET['offset'] ) ? max( 0, absint( wp_unslash( $_GET['offset'] ) ) ) : 0,
 			's'      => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
+			'sort'   => isset( $_GET['sort'] ) && 'date' === $_GET['sort'] ? 'date' : 'views',
 			'run'    => ! empty( $_GET['run'] ) ? '1' : '',
 		];
 	}
@@ -227,6 +228,41 @@ class MHM_Audit_Admin {
 		self::select( 'lang', $options, $context['lang'], __( 'Language', 'mavo-hub-manager' ) );
 	}
 
+	/**
+	 * Ordering. "Most viewed" joins the view counter, so it can only list posts
+	 * that have one — the reason the date order exists.
+	 */
+	private static function sort_select( array $context ): void {
+		self::select(
+			'sort',
+			[
+				'views' => __( 'Most viewed first', 'mavo-hub-manager' ),
+				'date'  => __( 'Newest first (includes posts with no view counter)', 'mavo-hub-manager' ),
+			],
+			$context['sort'],
+			__( 'Sort', 'mavo-hub-manager' )
+		);
+	}
+
+	/** What the report on screen actually cost, so a slow one is visible. */
+	private static function render_cost( float $started, int $queries_before ): void {
+		$ms = ( microtime( true ) - $started ) * 1000;
+
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() - $queries_before : 0;
+
+		printf(
+			'<p class="mhm-cost mhm-muted">%s</p>',
+			esc_html(
+				sprintf(
+					/* translators: 1: milliseconds, 2: number of database queries */
+					__( 'Report built in %1$d ms and %2$d database queries.', 'mavo-hub-manager' ),
+					(int) round( $ms ),
+					(int) $queries
+				)
+			)
+		);
+	}
+
 	private static function post_type_select( array $context ): void {
 		self::select(
 			'ptype',
@@ -254,7 +290,7 @@ class MHM_Audit_Admin {
 		echo '<p class="description">' . esc_html(
 			sprintf(
 				/* translators: %s: views meta key */
-				__( 'Posts and pages with no primary hub of the chosen kind, most viewed first (meta key "%s"; posts with no counter yet sort last). Posts that are themselves hubs of that kind are hidden, because a top-level hub legitimately has no parent.', 'mavo-hub-manager' ),
+				__( 'Posts and pages with no primary hub of the chosen kind. "Most viewed first" orders by the "%s" meta key and therefore only lists posts that have one — switch to "Newest first" to see the rest. Hubs are hidden, because a top-level hub legitimately has no parent.', 'mavo-hub-manager' ),
 				MHM_Audit::views_meta_key()
 			)
 		) . '</p>';
@@ -266,7 +302,6 @@ class MHM_Audit_Admin {
 				'geo'   => __( 'Missing geographic hub', 'mavo-hub-manager' ),
 				'theme' => __( 'Missing thematic hub', 'mavo-hub-manager' ),
 				'both'  => __( 'Missing both hubs', 'mavo-hub-manager' ),
-				'any'   => __( 'Missing at least one hub', 'mavo-hub-manager' ),
 			],
 			$context['mode'],
 			__( 'What is missing', 'mavo-hub-manager' )
@@ -274,6 +309,7 @@ class MHM_Audit_Admin {
 		self::language_select( $context );
 		self::post_type_select( $context );
 		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
+		self::sort_select( $context );
 		printf(
 			'<input type="search" name="s" value="%s" placeholder="%s" /> ',
 			esc_attr( $context['s'] ),
@@ -281,9 +317,13 @@ class MHM_Audit_Admin {
 		);
 		self::close_filters( $context );
 
+		$started = microtime( true );
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
+
 		$report = MHM_Audit::missing_hub(
 			[
 				'mode'      => $context['mode'],
+				'sort'      => $context['sort'],
 				'lang'      => $context['lang'],
 				'post_type' => $context['ptype'],
 				'status'    => $context['status'],
@@ -292,13 +332,16 @@ class MHM_Audit_Admin {
 			]
 		);
 
+		// No total: counting every matching row across the site is the part
+		// that does not scale, so the report pages with prev/next instead.
 		printf(
 			'<p><strong>%s</strong></p>',
 			esc_html(
 				sprintf(
-					/* translators: %d: number of posts */
-					_n( '%d post or page has no hub with these filters.', '%d posts and pages have no hub with these filters.', $report['total'], 'mavo-hub-manager' ),
-					$report['total']
+					/* translators: 1: first row number, 2: last row number */
+					__( 'Showing posts %1$d–%2$d with no hub.', 'mavo-hub-manager' ),
+					$report['rows'] ? ( ( $report['paged'] - 1 ) * $report['per_page'] ) + 1 : 0,
+					( ( $report['paged'] - 1 ) * $report['per_page'] ) + count( $report['rows'] )
 				)
 			)
 		);
@@ -345,14 +388,15 @@ class MHM_Audit_Admin {
 
 		echo '</tbody></table>';
 
-		self::render_pagination( $context, $report['paged'], $report['pages'] );
+		self::render_pagination( $context, (int) $report['paged'], (bool) $report['has_more'] );
+		self::render_cost( $started, $queries );
 
 		echo '<p class="description">' . esc_html__( 'To assign hubs, open the hub in Tools → Hub Manager and use its link scanner or its manual "Add child" search. Assignment is never done from this report.', 'mavo-hub-manager' ) . '</p>';
 		echo '</div>';
 	}
 
-	private static function render_pagination( array $context, int $paged, int $pages ): void {
-		if ( $pages < 2 ) {
+	private static function render_pagination( array $context, int $paged, bool $has_more ): void {
+		if ( 1 === $paged && ! $has_more ) {
 			return;
 		}
 
@@ -368,14 +412,13 @@ class MHM_Audit_Admin {
 			'<span class="mhm-muted">%s</span> ',
 			esc_html(
 				sprintf(
-					/* translators: 1: current page, 2: total pages */
-					__( 'Page %1$d of %2$d', 'mavo-hub-manager' ),
-					$paged,
-					$pages
+					/* translators: %d: current page */
+					__( 'Page %d', 'mavo-hub-manager' ),
+					$paged
 				)
 			)
 		);
-		if ( $paged < $pages ) {
+		if ( $has_more ) {
 			echo '<a class="button" href="' . esc_url( $link( $paged + 1 ) ) . '">' . esc_html__( 'Next ›', 'mavo-hub-manager' ) . '</a>';
 		}
 		echo '</p>';
@@ -387,13 +430,12 @@ class MHM_Audit_Admin {
 		echo '<div class="mhm-panel">';
 		echo '<h2>' . esc_html__( 'Children with no link back to their hub', 'mavo-hub-manager' ) . '</h2>';
 		echo '<p class="description">' . esc_html__( 'A child whose primary hub is set but whose own content never points at that hub. Both an <a href> and a link-back shortcode count as a link: a post carrying [mavo_hub_strip slug="…"] that resolves to its hub does not appear here.', 'mavo-hub-manager' ) . '</p>';
-		echo '<p class="description">' . esc_html__( 'This report reads post content, so it works through the assigned children one batch at a time, most viewed first.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'This report reads post content, so it works through the assigned children one batch at a time. Links are matched against the hub\'s own permalink, so the check itself costs no database queries.', 'mavo-hub-manager' ) . '</p>';
 
 		self::open_filters( $context );
 		self::select(
 			'ltype',
 			[
-				'any'   => __( 'Both relationship types', 'mavo-hub-manager' ),
 				'geo'   => __( 'Geographic relationships', 'mavo-hub-manager' ),
 				'theme' => __( 'Thematic relationships', 'mavo-hub-manager' ),
 			],
@@ -403,11 +445,16 @@ class MHM_Audit_Admin {
 		self::language_select( $context );
 		self::post_type_select( $context );
 		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
+		self::sort_select( $context );
 		self::close_filters( $context );
+
+		$started = microtime( true );
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
 
 		$report = MHM_Audit::no_link_back(
 			[
 				'type'      => $context['ltype'],
+				'sort'      => $context['sort'],
 				'lang'      => $context['lang'],
 				'post_type' => $context['ptype'],
 				'status'    => $context['status'],
@@ -428,11 +475,10 @@ class MHM_Audit_Admin {
 			),
 			esc_html(
 				sprintf(
-					/* translators: 1: first child, 2: last child, 3: total assigned children, 4: linked count */
-					__( 'Checked children %1$d–%2$d of %3$d assigned; %4$d already link back.', 'mavo-hub-manager' ),
+					/* translators: 1: first child, 2: last child, 3: number that already link back */
+					__( 'Checked children %1$d–%2$d; %3$d of them already link back.', 'mavo-hub-manager' ),
 					$first,
 					$report['offset'] + $report['scanned'],
-					$report['total'],
 					$report['linked']
 				)
 			)
@@ -472,6 +518,7 @@ class MHM_Audit_Admin {
 		}
 
 		self::render_batch_nav( $context, $report );
+		self::render_cost( $started, $queries );
 
 		echo '<p class="description">' . esc_html__( 'Nothing is changed by this report. A missing link back is an editorial gap, not a broken relationship: the stored primary hub stays the source of truth.', 'mavo-hub-manager' ) . '</p>';
 		echo '</div>';
@@ -512,7 +559,7 @@ class MHM_Audit_Admin {
 
 	private static function render_batch_nav( array $context, array $report ): void {
 		$batch = (int) $report['batch'];
-		$next  = (int) $report['offset'] + $batch;
+		$next  = (int) $report['offset'] + (int) $report['scanned'];
 
 		echo '<p class="mhm-pagination">';
 
@@ -524,7 +571,7 @@ class MHM_Audit_Admin {
 			);
 		}
 
-		if ( $next < (int) $report['total'] ) {
+		if ( ! empty( $report['has_more'] ) ) {
 			printf(
 				'<a class="button button-primary" href="%s">%s</a>',
 				esc_url( self::page_url( array_merge( $context, [ 'offset' => $next ] ) ) ),
@@ -570,9 +617,12 @@ class MHM_Audit_Admin {
 		printf(
 			'<label class="mhm-field"><input type="checkbox" name="stale" value="1" %s /> %s</label> ',
 			checked( $context['stale'], '1', false ),
-			esc_html__( 'Include link analysis (reads every hub\'s content)', 'mavo-hub-manager' )
+			esc_html__( 'Include link analysis — reads and resolves the links in every hub, so it is slow on many hubs', 'mavo-hub-manager' )
 		);
 		self::close_filters( $context );
+
+		$started = microtime( true );
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
 
 		$report  = MHM_Audit::hub_health(
 			[
@@ -657,7 +707,10 @@ class MHM_Audit_Admin {
 			echo '</tr>';
 		}
 
-		echo '</tbody></table></div>';
+		echo '</tbody></table>';
+
+		self::render_cost( $started, $queries );
+		echo '</div>';
 	}
 
 	/* ---------------------------------------------- 4. relationship errors */

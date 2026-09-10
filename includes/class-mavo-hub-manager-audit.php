@@ -13,6 +13,21 @@
  *
  * Everything is derived from the same three meta keys. No audit result is
  * cached in post meta, and no audit run repairs anything.
+ *
+ * ---------------------------------------------------------------------------
+ * Cost rules, learned the hard way — these reports run over the whole site:
+ *
+ *   * Every meta condition is AND'ed and uses EXISTS / NOT EXISTS only. An OR
+ *     group over postmeta makes WordPress emit one LEFT JOIN per branch and
+ *     MySQL then joins them against each other; three such groups is enough to
+ *     hang the request.
+ *   * No SQL_CALC_FOUND_ROWS: 'no_found_rows' is always on and one extra row is
+ *     fetched to answer "is there a next page?".
+ *   * The link-back check never resolves a URL to an ID. url_to_postid() runs
+ *     the rewrite rules plus a query per link, which is thousands of queries
+ *     for one batch. Links are compared to the hub's own permalink instead —
+ *     see url_keys() — which costs nothing.
+ * ---------------------------------------------------------------------------
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -30,8 +45,9 @@ class MHM_Audit {
 	public const LINK_ANCESTOR  = 'ancestor';
 	public const LINK_NONE      = 'none';
 
-	/** Resolved outbound targets per post, for one request only. */
-	private static array $targets_cache = [];
+	/** Per-request caches: identity keys per post, link keys per post. */
+	private static array $post_keys_cache = [];
+	private static array $link_keys_cache = [];
 
 	/* ------------------------------------------------------------ settings */
 
@@ -39,7 +55,7 @@ class MHM_Audit {
 	 * Meta key holding the view counter used for ordering.
 	 *
 	 * Maman Voyage stores it as plain `views` (see mavo-geo-explorer and
-	 * postsByTagOrderedByViews). Posts with no counter yet sort last.
+	 * postsByTagOrderedByViews).
 	 */
 	public static function views_meta_key(): string {
 		return (string) apply_filters( 'mavo_hub_manager_views_meta_key', 'views' );
@@ -68,64 +84,160 @@ class MHM_Audit {
 		);
 	}
 
-	/* -------------------------------------------------------- link targets */
+	/* ------------------------------------------------------- link matching */
 
 	/**
-	 * Every internal post/page this post points at, split by how.
+	 * Comparable keys for one href, without touching the database.
 	 *
-	 * @return array{anchor:int[],shortcode:int[]}
+	 * A link and a post match when they share any key:
+	 *
+	 *   path:/paris-en-famille/   the normalised site path
+	 *   slug:paris-en-famille     the last path segment, so a dated permalink
+	 *                             (/2024/05/slug/) matches a plain one
+	 *   id:1234                   ?p=/?page_id=/?post= links
+	 *
+	 * External, fragment-only, mailto/tel/javascript links produce no keys.
+	 *
+	 * @return string[]
 	 */
-	public static function outbound_targets( int $post_id ): array {
+	public static function url_keys( string $url ): array {
+		$url = trim( html_entity_decode( $url, ENT_QUOTES, 'UTF-8' ) );
+
+		if ( '' === $url || str_starts_with( $url, '#' ) ) {
+			return [];
+		}
+
+		$scheme = strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) );
+		if ( $scheme && ! in_array( $scheme, [ 'http', 'https' ], true ) ) {
+			return [];
+		}
+
+		$absolute = MHM_Scanner::to_internal_absolute_url( $url );
+		if ( '' === $absolute ) {
+			return [];
+		}
+
+		$parts = wp_parse_url( $absolute );
+		if ( ! is_array( $parts ) ) {
+			return [];
+		}
+
+		$keys = [];
+		$path = isset( $parts['path'] ) ? strtolower( rawurldecode( (string) $parts['path'] ) ) : '';
+		$path = trim( $path, '/' );
+
+		if ( '' !== $path ) {
+			$keys[] = 'path:/' . $path . '/';
+
+			$segments = array_values( array_filter( explode( '/', $path ) ) );
+			$slug     = (string) end( $segments );
+
+			// A trailing /page/2/ or /amp/ still points at the same object.
+			if ( in_array( $slug, [ 'amp', 'feed' ], true ) || ctype_digit( $slug ) ) {
+				array_pop( $segments );
+				$slug = (string) end( $segments );
+			}
+
+			if ( '' !== $slug ) {
+				$keys[] = 'slug:' . $slug;
+			}
+		}
+
+		if ( ! empty( $parts['query'] ) ) {
+			$query = [];
+			parse_str( (string) $parts['query'], $query );
+
+			foreach ( [ 'p', 'page_id', 'post' ] as $arg ) {
+				if ( ! empty( $query[ $arg ] ) && ctype_digit( (string) $query[ $arg ] ) ) {
+					$keys[] = 'id:' . (int) $query[ $arg ];
+				}
+			}
+		}
+
+		return array_values( array_unique( $keys ) );
+	}
+
+	/**
+	 * The keys that identify one post as a link target.
+	 *
+	 * @return string[]
+	 */
+	public static function post_keys( int $post_id ): array {
 		$post_id = absint( $post_id );
 
-		if ( isset( self::$targets_cache[ $post_id ] ) ) {
-			return self::$targets_cache[ $post_id ];
+		if ( isset( self::$post_keys_cache[ $post_id ] ) ) {
+			return self::$post_keys_cache[ $post_id ];
+		}
+
+		$post = MHM_Model::get_eligible_post( $post_id );
+		if ( ! $post ) {
+			return self::$post_keys_cache[ $post_id ] = [];
+		}
+
+		$keys = [ 'id:' . $post_id ];
+
+		$permalink = (string) get_permalink( $post_id );
+		if ( '' !== $permalink ) {
+			$keys = array_merge( $keys, self::url_keys( $permalink ) );
+		}
+
+		if ( '' !== (string) $post->post_name ) {
+			$keys[] = 'slug:' . strtolower( (string) $post->post_name );
+		}
+
+		return self::$post_keys_cache[ $post_id ] = array_values( array_unique( $keys ) );
+	}
+
+	/**
+	 * Every link key this post points at, split by how it links.
+	 *
+	 * @return array{anchor:string[],shortcode:string[]}
+	 */
+	public static function outbound_link_keys( int $post_id ): array {
+		$post_id = absint( $post_id );
+
+		if ( isset( self::$link_keys_cache[ $post_id ] ) ) {
+			return self::$link_keys_cache[ $post_id ];
 		}
 
 		$post    = MHM_Model::get_eligible_post( $post_id );
 		$content = $post ? (string) $post->post_content : '';
 
-		$anchors = [];
+		$anchor = [];
 		foreach ( MHM_Scanner::extract_links( $content ) as $url ) {
-			$target = MHM_Scanner::resolve_url( $url );
-			if ( $target && $target !== $post_id ) {
-				$anchors[ $target ] = true;
+			foreach ( self::url_keys( $url ) as $key ) {
+				$anchor[ $key ] = true;
 			}
 		}
 
-		$shortcodes = [];
-		foreach ( self::shortcode_link_targets( $content ) as $target ) {
-			if ( $target !== $post_id ) {
-				$shortcodes[ $target ] = true;
-			}
+		$shortcode = [];
+		foreach ( self::shortcode_link_keys( $content ) as $key ) {
+			$shortcode[ $key ] = true;
 		}
 
-		$result = [
-			'anchor'    => array_map( 'absint', array_keys( $anchors ) ),
-			'shortcode' => array_map( 'absint', array_keys( $shortcodes ) ),
+		return self::$link_keys_cache[ $post_id ] = [
+			'anchor'    => array_keys( $anchor ),
+			'shortcode' => array_keys( $shortcode ),
 		];
-
-		self::$targets_cache[ $post_id ] = $result;
-
-		return $result;
 	}
 
-	/** Forget cached scans — long batch runs should not hold every post. */
-	public static function flush_target_cache(): void {
-		self::$targets_cache = [];
+	/** Drop the per-post caches so a long batch does not hold every post. */
+	public static function flush_caches(): void {
+		self::$link_keys_cache = [];
+		self::$post_keys_cache = [];
 	}
 
 	/**
-	 * Post/page IDs referenced by link-back shortcodes in stored content.
+	 * Link keys referenced by link-back shortcodes in stored content.
 	 *
-	 * @return int[]
+	 * @return string[]
 	 */
-	public static function shortcode_link_targets( string $content ): array {
+	public static function shortcode_link_keys( string $content ): array {
 		if ( '' === trim( $content ) ) {
 			return [];
 		}
 
-		$targets = [];
+		$keys = [];
 
 		foreach ( self::link_back_shortcodes() as $tag => $attribute ) {
 			$tag       = (string) $tag;
@@ -148,14 +260,13 @@ class MHM_Audit {
 					continue;
 				}
 
-				$target = MHM_Scanner::resolve_url( self::shortcode_value_to_url( $value ) );
-				if ( $target ) {
-					$targets[ $target ] = true;
+				foreach ( self::url_keys( self::shortcode_value_to_url( $value ) ) as $key ) {
+					$keys[ $key ] = true;
 				}
 			}
 		}
 
-		return array_map( 'absint', array_keys( $targets ) );
+		return array_keys( $keys );
 	}
 
 	/**
@@ -184,6 +295,8 @@ class MHM_Audit {
 	 * an ancestor of the hub (Paris instead of Paris en famille) does not: it is
 	 * reported separately so the editor can judge it.
 	 *
+	 * Pure PHP — the child's content and the hub's permalink are all it needs.
+	 *
 	 * @return array{linked:bool,via:string,ancestor:int}
 	 */
 	public static function link_back_status( int $child_id, int $hub_id, string $type ): array {
@@ -192,24 +305,32 @@ class MHM_Audit {
 
 		$result = [ 'linked' => false, 'via' => self::LINK_NONE, 'ancestor' => 0 ];
 
-		if ( ! $child_id || ! $hub_id ) {
+		if ( ! $child_id || ! $hub_id || $child_id === $hub_id ) {
 			return $result;
 		}
 
-		$targets = self::outbound_targets( $child_id );
+		$links    = self::outbound_link_keys( $child_id );
+		$hub_keys = self::post_keys( $hub_id );
 
-		if ( in_array( $hub_id, $targets['anchor'], true ) ) {
+		if ( ! $hub_keys ) {
+			return $result; // The hub no longer exists; the errors tab owns that case.
+		}
+
+		if ( array_intersect( $hub_keys, $links['anchor'] ) ) {
 			return [ 'linked' => true, 'via' => self::LINK_ANCHOR, 'ancestor' => 0 ];
 		}
 
-		if ( in_array( $hub_id, $targets['shortcode'], true ) ) {
+		if ( array_intersect( $hub_keys, $links['shortcode'] ) ) {
 			return [ 'linked' => true, 'via' => self::LINK_SHORTCODE, 'ancestor' => 0 ];
 		}
 
-		$reachable = array_merge( $targets['anchor'], $targets['shortcode'] );
+		$reachable = array_merge( $links['anchor'], $links['shortcode'] );
+		if ( ! $reachable ) {
+			return $result;
+		}
 
 		foreach ( MHM_Model::get_hub_ancestors( $hub_id, $type ) as $ancestor ) {
-			if ( in_array( (int) $ancestor, $reachable, true ) ) {
+			if ( array_intersect( self::post_keys( (int) $ancestor ), $reachable ) ) {
 				$result['via']      = self::LINK_ANCESTOR;
 				$result['ancestor'] = (int) $ancestor;
 				break;
@@ -221,45 +342,13 @@ class MHM_Audit {
 
 	/* ------------------------------------------------------- query helpers */
 
-	/** "This meta is absent, empty or zero" — get_primary_hub() reads all three as none. */
-	private static function missing_meta_clause( string $key ): array {
-		return [
-			'relation' => 'OR',
-			[ 'key' => $key, 'compare' => 'NOT EXISTS' ],
-			[ 'key' => $key, 'value' => '', 'compare' => '=' ],
-			[ 'key' => $key, 'value' => '0', 'compare' => '=' ],
-		];
-	}
-
 	/**
-	 * "This post is not itself a hub of these types."
+	 * Shared query scaffolding.
 	 *
-	 * A top-level geographic hub legitimately has no geographic parent, so hubs
-	 * are excluded from the missing-hub report by default.
+	 * `no_found_rows` is deliberate: the reports page with prev/next links
+	 * instead of a total, because counting every matching row is exactly the
+	 * part that does not scale.
 	 */
-	private static function not_hub_clause( array $types ): array {
-		return [
-			'relation' => 'OR',
-			[ 'key' => MHM_Model::META_HUB_TYPE, 'compare' => 'NOT EXISTS' ],
-			[ 'key' => MHM_Model::META_HUB_TYPE, 'value' => array_values( $types ), 'compare' => 'NOT IN' ],
-		];
-	}
-
-	/**
-	 * Ordering clauses for the view counter. Posts without the meta still
-	 * appear — they sort last, because MySQL puts NULL last on DESC.
-	 */
-	private static function views_clause(): array {
-		$key = self::views_meta_key();
-
-		return [
-			'relation'       => 'OR',
-			'mhm_views'      => [ 'key' => $key, 'compare' => 'EXISTS', 'type' => 'NUMERIC' ],
-			'mhm_views_none' => [ 'key' => $key, 'compare' => 'NOT EXISTS' ],
-		];
-	}
-
-	/** Shared query scaffolding: post type, status, language, no caches we do not need. */
 	private static function base_args( array $args ): array {
 		$post_type = isset( $args['post_type'] ) ? (string) $args['post_type'] : 'any';
 		$status    = isset( $args['status'] ) ? (string) $args['status'] : 'publish';
@@ -268,6 +357,7 @@ class MHM_Audit {
 			'post_type'              => in_array( $post_type, MHM_Model::POST_TYPES, true ) ? [ $post_type ] : MHM_Model::POST_TYPES,
 			'post_status'            => in_array( $status, [ 'publish', 'draft', 'pending', 'future', 'private' ], true ) ? $status : 'any',
 			'fields'                 => 'ids',
+			'no_found_rows'          => true,
 			'ignore_sticky_posts'    => true,
 			'update_post_term_cache' => false,
 		];
@@ -279,63 +369,81 @@ class MHM_Audit {
 		return $query;
 	}
 
+	/**
+	 * Ordering. 'views' inner-joins the counter — which means posts that have
+	 * no counter at all are not in that list; 'date' is the way to see those.
+	 */
+	private static function order_args( string $sort ): array {
+		if ( 'views' === $sort ) {
+			return [
+				'clause'  => [ 'key' => self::views_meta_key(), 'compare' => 'EXISTS', 'type' => 'NUMERIC' ],
+				'orderby' => [ 'mhm_views' => 'DESC' ],
+			];
+		}
+
+		return [ 'clause' => null, 'orderby' => [ 'date' => 'DESC' ] ];
+	}
+
+	/** Warm the post and meta caches for one page of results in two queries. */
+	private static function prime( array $post_ids ): void {
+		$post_ids = array_values( array_filter( array_map( 'absint', $post_ids ) ) );
+
+		if ( ! $post_ids ) {
+			return;
+		}
+
+		if ( function_exists( '_prime_post_caches' ) ) {
+			_prime_post_caches( $post_ids, false, false );
+		}
+		if ( function_exists( 'update_meta_cache' ) ) {
+			update_meta_cache( 'post', $post_ids );
+		}
+	}
+
 	/* --------------------------------------------------- 1. posts with no hub */
 
 	/**
-	 * Posts/pages with no primary hub, most viewed first.
+	 * Posts/pages with no primary hub.
 	 *
-	 * @param array $args mode: geo|theme|both|any, lang, post_type, status,
-	 *                    paged, per_page, include_hubs.
-	 * @return array{rows:int[],total:int,pages:int,paged:int,per_page:int,mode:string}
+	 * @param array $args mode: geo|theme|both, sort: views|date, lang,
+	 *                    post_type, status, paged, per_page, include_hubs.
+	 * @return array{rows:int[],paged:int,per_page:int,has_more:bool,mode:string,sort:string}
 	 */
 	public static function missing_hub( array $args = [] ): array {
-		$mode = isset( $args['mode'] ) && in_array( $args['mode'], [ 'geo', 'theme', 'both', 'any' ], true )
+		$mode = isset( $args['mode'] ) && in_array( $args['mode'], [ 'geo', 'theme', 'both' ], true )
 			? (string) $args['mode']
 			: 'geo';
+		$sort = isset( $args['sort'] ) && 'date' === $args['sort'] ? 'date' : 'views';
 
 		$per_page = isset( $args['per_page'] ) ? max( 1, min( 200, absint( $args['per_page'] ) ) ) : self::DEFAULT_PER_PAGE;
 		$paged    = isset( $args['paged'] ) ? max( 1, absint( $args['paged'] ) ) : 1;
 
-		$geo     = self::missing_meta_clause( MHM_Model::META_GEO_HUB );
-		$theme   = self::missing_meta_clause( MHM_Model::META_THEME_HUB );
-		$missing = [];
+		$meta_query = [ 'relation' => 'AND' ];
+		$order      = self::order_args( $sort );
 
-		switch ( $mode ) {
-			case 'geo':
-				$missing = $geo;
-				break;
-
-			case 'theme':
-				$missing = $theme;
-				break;
-
-			case 'both': // Missing both at once.
-				$missing = [ 'relation' => 'AND', $geo, $theme ];
-				break;
-
-			case 'any': // Missing at least one of the two.
-				$missing = [ 'relation' => 'OR', $geo, $theme ];
-				break;
+		if ( $order['clause'] ) {
+			$meta_query['mhm_views'] = $order['clause'];
 		}
 
-		$meta_query = [
-			'relation' => 'AND',
-			self::views_clause(),
-			$missing,
-		];
+		// One NOT EXISTS per key, AND'ed. A stored empty or 0 value would slip
+		// through here; the Relationship errors tab is where those show up.
+		foreach ( ( 'both' === $mode ? MHM_Model::types() : [ $mode ] ) as $type ) {
+			$meta_query[] = [ 'key' => MHM_Model::meta_key_for_type( $type ), 'compare' => 'NOT EXISTS' ];
+		}
 
+		// Hubs are hidden by default: a top-level hub legitimately has no parent.
 		if ( empty( $args['include_hubs'] ) ) {
-			$exclude = ( 'geo' === $mode || 'theme' === $mode ) ? [ $mode ] : MHM_Model::types();
-			$meta_query[] = self::not_hub_clause( $exclude );
+			$meta_query[] = [ 'key' => MHM_Model::META_HUB_TYPE, 'compare' => 'NOT EXISTS' ];
 		}
 
 		$query_args = array_merge(
 			self::base_args( $args ),
 			[
-				'posts_per_page' => $per_page,
-				'paged'          => $paged,
-				'meta_query'     => $meta_query, // phpcs:ignore WordPress.DB.SlowDBQuery -- audit screen, on demand only.
-				'orderby'        => [ 'mhm_views' => 'DESC', 'date' => 'DESC' ],
+				// One extra row answers "is there a next page?" without counting.
+				'posts_per_page' => $per_page + 1,
+				'offset'         => ( $paged - 1 ) * $per_page,
+				'meta_query'     => $meta_query, // phpcs:ignore WordPress.DB.SlowDBQuery -- on-demand audit screen.
+				'orderby'        => $order['orderby'],
 			]
 		);
 
@@ -343,16 +451,19 @@ class MHM_Audit {
 			$query_args['s'] = (string) $args['search'];
 		}
 
-		$query = new WP_Query( $query_args );
-		$total = (int) ( $query->found_posts ?? count( $query->posts ) );
+		$rows     = array_map( 'absint', (array) ( new WP_Query( $query_args ) )->posts );
+		$has_more = count( $rows ) > $per_page;
+		$rows     = array_slice( $rows, 0, $per_page );
+
+		self::prime( $rows );
 
 		return [
-			'rows'     => array_map( 'absint', (array) $query->posts ),
-			'total'    => $total,
-			'pages'    => (int) ceil( $total / $per_page ),
+			'rows'     => $rows,
 			'paged'    => $paged,
 			'per_page' => $per_page,
+			'has_more' => $has_more,
 			'mode'     => $mode,
+			'sort'     => $sort,
 		];
 	}
 
@@ -365,89 +476,131 @@ class MHM_Audit {
 	 * children in view-count order and only inspects one batch per run. The
 	 * caller pages through with `offset`.
 	 *
-	 * @param array $args type: geo|theme|any, lang, post_type, status, offset, batch.
-	 * @return array{rows:array,total:int,offset:int,batch:int,scanned:int,linked:int,ancestor_only:int}
+	 * @param array $args type: geo|theme, sort, lang, post_type, status, offset, batch.
+	 * @return array{rows:array,offset:int,batch:int,scanned:int,linked:int,ancestor_only:int,has_more:bool,type:string,sort:string}
 	 */
 	public static function no_link_back( array $args = [] ): array {
-		$type   = isset( $args['type'] ) && MHM_Model::is_valid_type( (string) $args['type'] ) ? (string) $args['type'] : 'any';
+		$type = isset( $args['type'] ) && MHM_Model::is_valid_type( (string) $args['type'] ) ? (string) $args['type'] : 'geo';
+		$sort = isset( $args['sort'] ) && 'date' === $args['sort'] ? 'date' : 'views';
+
 		$batch  = isset( $args['batch'] ) ? max( 1, min( 500, absint( $args['batch'] ) ) ) : self::DEFAULT_BATCH;
 		$offset = isset( $args['offset'] ) ? max( 0, absint( $args['offset'] ) ) : 0;
 
-		$types    = 'any' === $type ? MHM_Model::types() : [ $type ];
-		$assigned = [ 'relation' => 'OR' ];
+		$order      = self::order_args( $sort );
+		$meta_query = [
+			'relation' => 'AND',
+			[ 'key' => MHM_Model::meta_key_for_type( $type ), 'compare' => 'EXISTS' ],
+		];
 
-		foreach ( $types as $one ) {
-			$assigned[] = [ 'key' => MHM_Model::meta_key_for_type( $one ), 'compare' => 'EXISTS' ];
+		if ( $order['clause'] ) {
+			$meta_query['mhm_views'] = $order['clause'];
 		}
 
 		$query_args = array_merge(
 			self::base_args( $args ),
 			[
-				'posts_per_page' => $batch,
+				'posts_per_page' => $batch + 1,
 				'offset'         => $offset,
-				'meta_query'     => [ // phpcs:ignore WordPress.DB.SlowDBQuery -- audit screen, on demand only.
-					'relation' => 'AND',
-					self::views_clause(),
-					$assigned,
-				],
-				'orderby'        => [ 'mhm_views' => 'DESC', 'date' => 'DESC' ],
+				'meta_query'     => $meta_query, // phpcs:ignore WordPress.DB.SlowDBQuery -- on-demand audit screen.
+				'orderby'        => $order['orderby'],
 			]
 		);
 
-		$query    = new WP_Query( $query_args );
-		$children = array_map( 'absint', (array) $query->posts );
-		$total    = (int) ( $query->found_posts ?? count( $children ) );
+		$children = array_map( 'absint', (array) ( new WP_Query( $query_args ) )->posts );
+		$has_more = count( $children ) > $batch;
+		$children = array_slice( $children, 0, $batch );
+
+		// Two queries for the whole batch instead of two per row.
+		self::prime( $children );
 
 		$rows          = [];
 		$linked        = 0;
 		$ancestor_only = 0;
 
 		foreach ( $children as $child_id ) {
-			foreach ( $types as $one ) {
-				$hub_id = MHM_Model::get_primary_hub( $child_id, $one );
+			$hub_id = MHM_Model::get_primary_hub( $child_id, $type );
 
-				if ( null === $hub_id || $hub_id === $child_id ) {
-					continue;
-				}
-
-				$status = self::link_back_status( $child_id, $hub_id, $one );
-
-				if ( $status['linked'] ) {
-					$linked++;
-					continue;
-				}
-
-				if ( self::LINK_ANCESTOR === $status['via'] ) {
-					$ancestor_only++;
-				}
-
-				$rows[] = [
-					'child'    => $child_id,
-					'type'     => $one,
-					'hub'      => $hub_id,
-					'via'      => $status['via'],
-					'ancestor' => $status['ancestor'],
-					'views'    => self::get_views( $child_id ),
-					'missing'  => ! MHM_Model::get_eligible_post( $hub_id ),
-				];
+			if ( null === $hub_id || $hub_id === $child_id ) {
+				continue;
 			}
 
-			// Content of a scanned child is not needed again in this run.
-			self::flush_target_cache();
+			$status = self::link_back_status( $child_id, $hub_id, $type );
+
+			if ( $status['linked'] ) {
+				$linked++;
+				continue;
+			}
+
+			if ( self::LINK_ANCESTOR === $status['via'] ) {
+				$ancestor_only++;
+			}
+
+			$rows[] = [
+				'child'    => $child_id,
+				'type'     => $type,
+				'hub'      => $hub_id,
+				'via'      => $status['via'],
+				'ancestor' => $status['ancestor'],
+				'views'    => self::get_views( $child_id ),
+				'missing'  => ! MHM_Model::get_eligible_post( $hub_id ),
+			];
 		}
+
+		self::flush_caches();
 
 		return [
 			'rows'          => $rows,
-			'total'         => $total,
 			'offset'        => $offset,
 			'batch'         => $batch,
 			'scanned'       => count( $children ),
 			'linked'        => $linked,
 			'ancestor_only' => $ancestor_only,
+			'has_more'      => $has_more,
+			'type'          => $type,
+			'sort'          => $sort,
 		];
 	}
 
 	/* --------------------------------------------------- 3. hub health report */
+
+	/**
+	 * Direct child counts for every hub at once, as hub ID => count.
+	 *
+	 * One grouped query replaces one query per hub. Returns null when there is
+	 * no $wpdb to ask — the caller then counts hub by hub.
+	 */
+	public static function child_count_map( string $type ): ?array {
+		global $wpdb;
+
+		$key = MHM_Model::meta_key_for_type( $type );
+
+		if ( ! $key || ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return null;
+		}
+
+		$placeholders = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table names and generated placeholders.
+				"SELECT pm.meta_value AS hub, COUNT(*) AS total
+				 FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				 WHERE pm.meta_key = %s
+				   AND p.post_type IN ( {$placeholders} )
+				 GROUP BY pm.meta_value",
+				// phpcs:enable
+				array_merge( [ $key ], MHM_Model::POST_TYPES )
+			)
+		);
+
+		$map = [];
+		foreach ( (array) $rows as $row ) {
+			$map[ absint( $row->hub ) ] = (int) $row->total;
+		}
+
+		return $map;
+	}
 
 	/**
 	 * One row per hub: parent, depth, direct children, and — when asked —
@@ -465,9 +618,17 @@ class MHM_Audit {
 			]
 		);
 
+		// Hubs and their ancestors are read repeatedly below; prime once.
+		self::prime( $hubs );
+
 		$with_stale = ! empty( $args['stale'] );
+		$counts     = [];
+		foreach ( MHM_Model::types() as $one ) {
+			$counts[ $one ] = self::child_count_map( $one );
+		}
 
 		$rows    = [];
+		$titles  = [];
 		$summary = [
 			'hubs'          => 0,
 			'geo'           => 0,
@@ -489,7 +650,10 @@ class MHM_Audit {
 				continue;
 			}
 
-			$children  = MHM_Model::get_hub_children( $hub_id, $type );
+			$children = null === $counts[ $type ]
+				? MHM_Model::count_hub_children( $hub_id, $type )
+				: (int) ( $counts[ $type ][ $hub_id ] ?? 0 );
+
 			$parent    = MHM_Model::get_primary_hub( $hub_id, $type );
 			$ancestors = MHM_Model::get_hub_ancestors( $hub_id, $type );
 			$issues    = MHM_Model::get_hub_issues( $hub_id );
@@ -502,7 +666,7 @@ class MHM_Audit {
 				'lang'       => MHM_Model::get_language( $hub_id ),
 				'parent'     => $parent,
 				'depth'      => count( $ancestors ),
-				'children'   => count( $children ),
+				'children'   => $children,
 				'issues'     => $issues,
 				'stale'      => null,
 				'unassigned' => null,
@@ -524,7 +688,7 @@ class MHM_Audit {
 			$summary['hubs']++;
 			$summary[ $type ]++;
 
-			if ( ! $row['children'] ) {
+			if ( ! $children ) {
 				$summary['no_children']++;
 			}
 			if ( null === $parent ) {
@@ -534,23 +698,24 @@ class MHM_Audit {
 				$summary['with_issues']++;
 			}
 
-			$rows[] = $row;
+			$titles[ $hub_id ] = (string) get_the_title( $hub_id );
+			$rows[]            = $row;
 		}
 
 		// Most broken first, then emptiest, then deepest — the rows an editor
 		// actually needs to look at float to the top.
 		usort(
 			$rows,
-			static function ( $a, $b ) {
+			static function ( $a, $b ) use ( $titles ) {
 				$cmp = count( $b['issues'] ) <=> count( $a['issues'] );
 				$cmp = $cmp ?: ( (int) $b['stale'] <=> (int) $a['stale'] );
 				$cmp = $cmp ?: ( $a['children'] <=> $b['children'] );
 
-				return $cmp ?: strcasecmp( (string) get_the_title( $a['hub'] ), (string) get_the_title( $b['hub'] ) );
+				return $cmp ?: strcasecmp( $titles[ $a['hub'] ] ?? '', $titles[ $b['hub'] ] ?? '' );
 			}
 		);
 
-		self::flush_target_cache();
+		self::flush_caches();
 
 		return [ 'rows' => $rows, 'summary' => $summary ];
 	}

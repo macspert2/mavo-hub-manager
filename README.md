@@ -98,20 +98,42 @@ Four on-demand reports, each its own tab, all read-only apart from one explicit
 
 | Tab | Question it answers |
 |---|---|
-| **Posts without a hub** | which posts/pages still have no primary geo hub, no theme hub, neither, or either — filtered by language, post type and status, **most viewed first** |
+| **Posts without a hub** | which posts/pages still have no primary geo hub, no theme hub, or neither — filtered by language, post type and status, **most viewed first** |
 | **No link back to hub** | which children point at a hub whose page they never link back to |
 | **Hub health** | per hub: parent, depth, derived child count, hierarchy problems, and optionally the stale/unassigned link comparison |
 | **Relationship errors** | the site-wide diagnostics: missing target, wrong hub type, self-reference, cycle, cross-language |
 
 ### Ordering by views
 
-*Posts without a hub* and *No link back* are ordered by the `views` post meta, descending,
-so the pages that actually matter come first. Posts with no counter yet still appear —
-they sort last. Change the key with:
+*Posts without a hub* and *No link back* offer two orders:
+
+* **Most viewed first** — joins the `views` post meta descending, so the pages that
+  actually matter come first. It can only list posts that *have* a counter.
+* **Newest first** — no join at all, and therefore the way to see posts with no counter.
+
+Change the key with:
 
 ```php
 add_filter( 'mavo_hub_manager_views_meta_key', fn() => 'my_view_counter' );
 ```
+
+### Keeping the reports cheap
+
+These reports run over the whole site, so they follow three rules, and every tab prints
+what it actually cost (`Report built in 34 ms and 6 database queries`):
+
+* **Meta conditions are AND'ed `EXISTS` / `NOT EXISTS` only.** An `OR` group over
+  `postmeta` makes WordPress emit one `LEFT JOIN` per branch and then join them against
+  each other; a few of those are enough to hang the request.
+* **No `SQL_CALC_FOUND_ROWS`.** Counting every matching row across the site is the part
+  that does not scale, so the lists page with prev/next links and no grand total.
+* **The link-back check never resolves a URL to an ID.** `url_to_postid()` runs the
+  rewrite rules plus a query *per link*; instead every href, and every hub, is reduced to
+  comparable keys (`path:/paris-en-famille/`, `slug:paris-en-famille`, `id:1234`) and the
+  two sets are intersected in PHP. A whole batch costs a couple of queries.
+
+The one deliberately slow option is *Hub health → include link analysis*, which scans
+every hub's content; it is off by default.
 
 ### The `mavo_hub_strip` shortcode counts as a link back
 

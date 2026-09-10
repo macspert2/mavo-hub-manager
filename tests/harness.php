@@ -52,6 +52,9 @@ function is_ssl() { return true; }
 function home_url( $path = '' ) { return rtrim( $GLOBALS['MOCK_HOME'], '/' ) . ( $path ? '/' . ltrim( $path, '/' ) : '' ); }
 function wp_parse_url( $url, $component = -1 ) { return -1 === $component ? parse_url( $url ) : parse_url( $url, $component ); }
 function untrailingslashit( $string ) { return rtrim( (string) $string, '/\\' ); }
+function _prime_post_caches( $ids, $terms = true, $meta = true ) {}
+function update_meta_cache( $type, $ids ) { return true; }
+function get_num_queries() { return 0; }
 
 /* ------------------------------------------------------------------ posts */
 

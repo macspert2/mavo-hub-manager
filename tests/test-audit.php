@@ -11,7 +11,7 @@
 
 require_once __DIR__ . '/harness.php';
 
-/* ------------------------------------------------- shortcode link targets */
+/* ---------------------------------------------------- link keys (no queries) */
 
 reset_store();
 
@@ -19,47 +19,62 @@ mock_post( 10, [ 'post_type' => 'page', 'post_title' => 'France', 'post_name' =>
 mock_post( 11, [ 'post_type' => 'page', 'post_title' => 'Paris', 'post_name' => 'paris' ] );
 mock_post( 12, [ 'post_type' => 'page', 'post_title' => 'London with kids', 'post_name' => 'london-with-kids' ] );
 
-is_same(
-	[ 10 ],
-	MHM_Audit::shortcode_link_targets( '<p>Texte.</p>[mavo_hub_strip slug="france" text="Retrouvez notre {guide France}."]' ),
+/** Do these link keys point at this post? */
+function points_at( array $keys, int $post_id ): bool {
+	return (bool) array_intersect( MHM_Audit::post_keys( $post_id ), $keys );
+}
+
+ok( points_at( MHM_Audit::url_keys( 'https://www.mamanvoyage.com/france/' ), 10 ), 'an absolute internal URL matches the page' );
+ok( points_at( MHM_Audit::url_keys( '/france/' ), 10 ), 'a relative URL matches the page' );
+ok( points_at( MHM_Audit::url_keys( '/france' ), 10 ), 'a missing trailing slash still matches' );
+ok( points_at( MHM_Audit::url_keys( '/france/#carte' ), 10 ), 'a fragment is ignored' );
+ok( points_at( MHM_Audit::url_keys( '/2024/05/france/' ), 10 ), 'a dated permalink matches by its last segment' );
+ok( points_at( MHM_Audit::url_keys( '/?p=10' ), 10 ), 'a ?p= link matches by ID' );
+ok( ! points_at( MHM_Audit::url_keys( '/paris/' ), 10 ), 'another page does not match' );
+is_same( [], MHM_Audit::url_keys( 'https://example.com/france/' ), 'an external URL yields no keys' );
+is_same( [], MHM_Audit::url_keys( '#anchor' ), 'a fragment-only link yields no keys' );
+is_same( [], MHM_Audit::url_keys( 'mailto:hello@example.com' ), 'a mailto link yields no keys' );
+
+/* ------------------------------------------------- shortcode link targets */
+
+ok(
+	points_at( MHM_Audit::shortcode_link_keys( '<p>Texte.</p>[mavo_hub_strip slug="france" text="Retrouvez notre {guide France}."]' ), 10 ),
 	'mavo_hub_strip slug resolves to the hub page'
 );
 
-is_same(
-	[ 10 ],
-	MHM_Audit::shortcode_link_targets( "[mavo_hub_strip slug='/france/' text='{France}']" ),
+ok(
+	points_at( MHM_Audit::shortcode_link_keys( "[mavo_hub_strip slug='/france/' text='{France}']" ), 10 ),
 	'a slug with slashes and single quotes resolves the same way'
 );
 
-is_same(
-	[ 12 ],
-	MHM_Audit::shortcode_link_targets( '[mavo_hub_strip slug="en/london-with-kids" text="{London}"]' ),
+ok(
+	points_at( MHM_Audit::shortcode_link_keys( '[mavo_hub_strip slug="en/london-with-kids" text="{London}"]' ), 12 ),
 	'a multi-segment slug resolves by its last path segment'
 );
 
-is_same(
-	[ 10 ],
-	MHM_Audit::shortcode_link_targets( '[mavo_hub_strip slug="https://www.mamanvoyage.com/france/" text="{France}"]' ),
+ok(
+	points_at( MHM_Audit::shortcode_link_keys( '[mavo_hub_strip slug="https://www.mamanvoyage.com/france/" text="{France}"]' ), 10 ),
 	'a full internal URL in the slug attribute resolves'
 );
 
 is_same(
 	[],
-	MHM_Audit::shortcode_link_targets( '[mavo_hub_strip slug="https://example.com/france/" text="{France}"]' ),
+	MHM_Audit::shortcode_link_keys( '[mavo_hub_strip slug="https://example.com/france/" text="{France}"]' ),
 	'an external URL in the slug attribute is ignored'
 );
 
 is_same(
 	[],
-	MHM_Audit::shortcode_link_targets( '[mavo_hub_strip_extra slug="france" text="{France}"]' ),
+	MHM_Audit::shortcode_link_keys( '[mavo_hub_strip_extra slug="france" text="{France}"]' ),
 	'a different shortcode tag is not mistaken for the link-back one'
 );
 
-is_same( [], MHM_Audit::shortcode_link_targets( 'No shortcode here.' ), 'plain content yields no shortcode targets' );
+is_same( [], MHM_Audit::shortcode_link_keys( 'No shortcode here.' ), 'plain content yields no shortcode targets' );
 
 /* ----------------------------------------------------------- link back to hub */
 
 reset_store();
+MHM_Audit::flush_caches();
 
 // France ← Paris ← Paris en famille ← articles.
 mock_post( 1, [ 'post_type' => 'page', 'post_title' => 'France', 'post_name' => 'france' ] );
@@ -180,6 +195,7 @@ is_same( 1, $broken['summary']['with_issues'], 'the summary counts hubs with pro
 /* ------------------------------------------------------------- Polylang */
 
 reset_store();
+MHM_Audit::flush_caches();
 mock_enable_polylang();
 
 mock_post( 30, [ 'post_type' => 'page', 'post_title' => 'France', 'post_name' => 'france', 'lang' => 'fr' ] );
