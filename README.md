@@ -176,8 +176,7 @@ add_filter(
 );
 ```
 
-**`[geo_related]` counts too**, and so does its `[geo_related_full]` alias. It takes no
-target attribute at all: the mavo-for-you block it renders leads with the post's own hub
+**`[geo_related]` counts too.** It takes no target attribute at all: the mavo-for-you block it renders leads with the post's own hub
 cards, so a post carrying it is treated as linking back to **both** of its primary hubs.
 Its `level` and `limit` attributes change nothing here.
 
@@ -189,7 +188,7 @@ Drop it back out with:
 ```php
 add_filter(
 	'mavo_hub_manager_link_back_shortcodes',
-	fn( $tags ) => array_diff_key( $tags, array_flip( [ 'geo_related', 'geo_related_full' ] ) )
+	fn( $tags ) => array_diff_key( $tags, array_flip( [ 'geo_related' ] ) )
 );
 ```
 

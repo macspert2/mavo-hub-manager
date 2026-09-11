@@ -76,10 +76,9 @@ class MHM_Audit {
 	 *
 	 * The attribute names where the shortcode keeps its target. An empty one
 	 * means the shortcode has no target attribute at all and always links to
-	 * the post's own hubs — `[geo_related]` (and its alias
-	 * `[geo_related_full]`) from mavo-for-you, whose block places the post's
-	 * primary hubs as its first cards. Those tags must also be listed in
-	 * link_back_hub_shortcodes() for the hub lookup to happen.
+	 * the post's own hubs — `[geo_related]` from mavo-for-you, whose block
+	 * places the post's primary hubs as its first cards. Such a tag must also
+	 * be listed in link_back_hub_shortcodes() for the hub lookup to happen.
 	 *
 	 * No shortcode has to be registered, and none is ever rendered: the stored
 	 * content is parsed as text, exactly like the internal-link scanner.
@@ -88,9 +87,8 @@ class MHM_Audit {
 		return (array) apply_filters(
 			'mavo_hub_manager_link_back_shortcodes',
 			[
-				'mavo_hub_strip'   => 'slug',
-				'geo_related'      => '',
-				'geo_related_full' => '',
+				'mavo_hub_strip' => 'slug',
+				'geo_related'    => '',
 			]
 		);
 	}
@@ -125,7 +123,7 @@ class MHM_Audit {
 			'strval',
 			(array) apply_filters(
 				'mavo_hub_manager_link_back_hub_shortcodes',
-				[ 'mavo_hub_strip', 'geo_related', 'geo_related_full' ]
+				[ 'mavo_hub_strip', 'geo_related' ]
 			)
 		) ) );
 	}

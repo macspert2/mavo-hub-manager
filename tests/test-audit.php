@@ -172,9 +172,9 @@ mock_post( 29, [
 	'post_content' => "<p>Du texte.</p>\n\n[geo_related]\n\nEncore du texte.",
 ] );
 mock_post( 30, [
-	'post_title'   => 'Geo related full child',
-	'post_name'    => 'geo-related-full-child',
-	'post_content' => '[geo_related_full limit="4"]',
+	'post_title'   => 'Plain child',
+	'post_name'    => 'plain-child',
+	'post_content' => '<p>Du texte, et aucun shortcode.</p>',
 ] );
 mock_post( 31, [
 	'post_title'   => 'Geo related with level',
@@ -283,12 +283,6 @@ is_same(
 	true,
 	MHM_Audit::link_back_status( 29, 4, 'theme' )['linked'],
 	'[geo_related] links back to the thematic hub as well'
-);
-
-is_same(
-	true,
-	MHM_Audit::link_back_status( 30, 3, 'geo' )['linked'],
-	'the [geo_related_full] alias counts the same way'
 );
 
 is_same(
