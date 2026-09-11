@@ -135,7 +135,10 @@ what it actually cost (`Report built in 34 ms and 6 database queries`):
 The one deliberately slow option is *Hub health → include link analysis*, which scans
 every hub's content; it is off by default.
 
-### The `mavo_hub_strip` shortcode counts as a link back
+### Shortcodes that count as a link back
+
+Two shortcodes render a hub link the stored content does not contain, and both count:
+`[mavo_hub_strip]` and `[geo_related]`.
 
 A post that links back through
 `[mavo_hub_strip slug="paris-en-famille" text="Voir aussi {Paris en famille}."]` is **not**
@@ -170,6 +173,23 @@ optional target opt in by tag:
 add_filter(
 	'mavo_hub_manager_link_back_hub_shortcodes',
 	fn( $tags ) => [ ...$tags, 'my_hub_link' ]
+);
+```
+
+**`[geo_related]` counts too**, and so does its `[geo_related_full]` alias. It takes no
+target attribute at all: the mavo-for-you block it renders leads with the post's own hub
+cards, so a post carrying it is treated as linking back to **both** of its primary hubs.
+Its `level` and `limit` attributes change nothing here.
+
+That last one is an editorial decision rather than a fact about the markup: `[geo_related]`
+is a *recommendation* block, so the hub card can be crowded out by the block's own limits,
+and the frontend may swap the block for personalized picks once a visitor has read enough.
+Drop it back out with:
+
+```php
+add_filter(
+	'mavo_hub_manager_link_back_shortcodes',
+	fn( $tags ) => array_diff_key( $tags, array_flip( [ 'geo_related', 'geo_related_full' ] ) )
 );
 ```
 
@@ -227,7 +247,7 @@ The scanner reads **stored** `post_content` and does not render shortcodes: rend
 admin can have side effects and pollute global `$post`, and the scan must stay
 deterministic. Links that only exist in shortcode output are not discovered by the hub's
 link scanner — assign those children manually. The audit's link-back check is the one
-exception: it parses known link-back shortcodes (`mavo_hub_strip`) as text and resolves
+exception: it parses known link-back shortcodes (`mavo_hub_strip`, `geo_related`) as text and resolves
 either their `slug` or, when there is none, the child's own primary hubs — still without
 rendering anything.
 
@@ -247,7 +267,7 @@ No WordPress required; the harness stubs what the model and scanner call.
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
 | `test-admin.php` | admin-post routing, confirmations, page rendering |
-| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, ancestors), views meta, hub health |
+| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), views meta, hub health |
 | `test-audit-admin.php` | every audit tab renders, writes nothing, and removal redirects back |
 
 ## Out of scope for V0

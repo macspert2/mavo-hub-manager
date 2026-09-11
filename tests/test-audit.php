@@ -166,12 +166,27 @@ mock_post( 28, [
 	'post_name'    => 'theme-only-strip-child',
 	'post_content' => '[mavo_hub_strip hub="theme"]',
 ] );
+mock_post( 29, [
+	'post_title'   => 'Geo related child',
+	'post_name'    => 'geo-related-child',
+	'post_content' => "<p>Du texte.</p>\n\n[geo_related]\n\nEncore du texte.",
+] );
+mock_post( 30, [
+	'post_title'   => 'Geo related full child',
+	'post_name'    => 'geo-related-full-child',
+	'post_content' => '[geo_related_full limit="4"]',
+] );
+mock_post( 31, [
+	'post_title'   => 'Geo related with level',
+	'post_name'    => 'geo-related-level-child',
+	'post_content' => '[geo_related level="city" limit="6"]',
+] );
 
-foreach ( [ 20, 21, 22, 23, 24, 25, 26, 27, 28 ] as $child ) {
+foreach ( [ 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 ] as $child ) {
 	MHM_Model::set_primary_hub( $child, 3, 'geo' );
 }
 
-foreach ( [ 25, 26, 27, 28 ] as $child ) {
+foreach ( [ 25, 26, 27, 28, 29, 30, 31 ] as $child ) {
 	MHM_Model::set_primary_hub( $child, 4, 'theme' );
 }
 
@@ -258,6 +273,49 @@ is_same(
 	'a slugless strip yields no keys when no post is given'
 );
 
+/* ------------------------- [geo_related] leads with the post's own hub cards */
+
+$related = MHM_Audit::link_back_status( 29, 3, 'geo' );
+is_same( true, $related['linked'], '[geo_related] counts as a link back to the geographic hub' );
+is_same( MHM_Audit::LINK_SHORTCODE, $related['via'], '[geo_related] is reported as a shortcode link' );
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 29, 4, 'theme' )['linked'],
+	'[geo_related] links back to the thematic hub as well'
+);
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 30, 3, 'geo' )['linked'],
+	'the [geo_related_full] alias counts the same way'
+);
+
+is_same(
+	true,
+	MHM_Audit::link_back_status( 31, 3, 'geo' )['linked'],
+	'its own level/limit attributes do not change which hubs it points at'
+);
+
+is_same(
+	[ 'id:3', 'id:4' ],
+	MHM_Audit::shortcode_link_keys( '[geo_related]', 29 ),
+	'[geo_related] resolves to both of the post\'s primary hubs'
+);
+
+is_same(
+	[],
+	MHM_Audit::shortcode_link_keys( '[geo_related]' ),
+	'and to nothing at all without a post to resolve against'
+);
+
+// The tag must not swallow its own alias, or a longer neighbour.
+is_same(
+	[],
+	MHM_Audit::shortcode_link_keys( '[geo_related_elsewhere]', 29 ),
+	'a longer tag starting with geo_related is not matched'
+);
+
 /* ------------------------------------------------------------- views meta */
 
 update_post_meta( 20, 'views', '4200' );
@@ -280,14 +338,14 @@ foreach ( $health['rows'] as $row ) {
 	$by_hub[ $row['hub'] ] = $row;
 }
 
-is_same( 9, $by_hub[3]['children'], 'direct children are counted from the children\'s own meta' );
+is_same( 12, $by_hub[3]['children'], 'direct children are counted from the children\'s own meta' );
 is_same( 2, $by_hub[3]['depth'], 'Paris en famille sits two levels below France' );
 is_same( 1, $by_hub[2]['parent'], 'Paris keeps France as its parent hub' );
 is_same( null, $by_hub[1]['parent'], 'France is top-level' );
 
 // "Paris en famille" has five assigned children but its own content links to none
 // of them: every relationship is stale from the hub's point of view.
-is_same( 9, $by_hub[3]['stale'], 'children the hub no longer links to are counted as stale' );
+is_same( 12, $by_hub[3]['stale'], 'children the hub no longer links to are counted as stale' );
 is_same( 0, $by_hub[3]['unassigned'], 'the hub links to nothing that is unassigned' );
 
 // A broken hierarchy surfaces as a problem on the hub row.

@@ -430,6 +430,7 @@ class MHM_Audit_Admin {
 		echo '<div class="mhm-panel">';
 		echo '<h2>' . esc_html__( 'Children with no link back to their hub', 'mavo-hub-manager' ) . '</h2>';
 		echo '<p class="description">' . esc_html__( 'A child whose primary hub is set but whose own content never points at that hub. Both an <a href> and a link-back shortcode count as a link: a post carrying [mavo_hub_strip] — with a slug, with a {geo:…} or {theme:…} marker, or bare, in which case it follows the post\'s own primary hubs — does not appear here.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( '[geo_related] counts too: its block leads with the post\'s own hub cards, so a post carrying it is treated as linking back to both of its primary hubs. It is a recommendation block rather than a fixed link, so that is an editorial decision, not a guarantee the hub card is on the page.', 'mavo-hub-manager' ) . '</p>';
 		echo '<p class="description">' . esc_html__( 'This report reads post content, so it works through the assigned children one batch at a time. Links are matched against the hub\'s own permalink, so the check itself costs no database queries.', 'mavo-hub-manager' ) . '</p>';
 
 		self::open_filters( $context );

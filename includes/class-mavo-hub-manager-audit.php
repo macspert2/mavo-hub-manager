@@ -68,19 +68,30 @@ class MHM_Audit {
 	}
 
 	/**
-	 * Shortcodes whose attribute points at a hub, as tag => attribute.
+	 * Shortcodes that render a link back to a hub, as tag => attribute.
 	 *
 	 * `[mavo_hub_strip slug="france" text="…{guide France}…"]` renders a link
 	 * back to /france/ on the frontend, so a post carrying it is NOT missing a
 	 * link back — even though the stored content contains no <a href>.
 	 *
-	 * The shortcode does not have to be registered: the stored content is
-	 * parsed directly, exactly like the internal-link scanner.
+	 * The attribute names where the shortcode keeps its target. An empty one
+	 * means the shortcode has no target attribute at all and always links to
+	 * the post's own hubs — `[geo_related]` (and its alias
+	 * `[geo_related_full]`) from mavo-for-you, whose block places the post's
+	 * primary hubs as its first cards. Those tags must also be listed in
+	 * link_back_hub_shortcodes() for the hub lookup to happen.
+	 *
+	 * No shortcode has to be registered, and none is ever rendered: the stored
+	 * content is parsed as text, exactly like the internal-link scanner.
 	 */
 	public static function link_back_shortcodes(): array {
 		return (array) apply_filters(
 			'mavo_hub_manager_link_back_shortcodes',
-			[ 'mavo_hub_strip' => 'slug' ]
+			[
+				'mavo_hub_strip'   => 'slug',
+				'geo_related'      => '',
+				'geo_related_full' => '',
+			]
 		);
 	}
 
@@ -98,13 +109,24 @@ class MHM_Audit {
 	 *   [mavo_hub_strip]                     both primary hubs
 	 *   [mavo_hub_strip hub="geo"]           the geographic hub only
 	 *   [mavo_hub_strip text="…{geo:…}…"]    the types its markers name
+	 *   [geo_related]                        both primary hubs
+	 *
+	 * `[geo_related]` takes no target attribute: its block leads with the
+	 * post's own hub cards, so carrying it counts as a link back to both
+	 * primary hubs. It is a recommendation block, though, not a fixed link —
+	 * the hub card can be crowded out by the block's own limits, and the
+	 * frontend may swap the block for personalized picks — so this is a
+	 * deliberate editorial decision, not a guarantee the link is on the page.
 	 *
 	 * @return string[]
 	 */
 	public static function link_back_hub_shortcodes(): array {
 		return array_values( array_filter( array_map(
 			'strval',
-			(array) apply_filters( 'mavo_hub_manager_link_back_hub_shortcodes', [ 'mavo_hub_strip' ] )
+			(array) apply_filters(
+				'mavo_hub_manager_link_back_hub_shortcodes',
+				[ 'mavo_hub_strip', 'geo_related', 'geo_related_full' ]
+			)
 		) ) );
 	}
 
@@ -317,7 +339,7 @@ class MHM_Audit {
 			foreach ( $matches[1] as $raw_atts ) {
 				$atts  = shortcode_parse_atts( $raw_atts );
 				$atts  = is_array( $atts ) ? $atts : [];
-				$value = isset( $atts[ $attribute ] ) ? trim( (string) $atts[ $attribute ] ) : '';
+				$value = ( '' !== $attribute && isset( $atts[ $attribute ] ) ) ? trim( (string) $atts[ $attribute ] ) : '';
 
 				if ( '' === $value ) {
 					if ( $resolves_hubs ) {
