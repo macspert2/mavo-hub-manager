@@ -46,8 +46,8 @@ class MHM_Admin {
 			return;
 		}
 
-		wp_enqueue_style( 'mavo-hub-manager', MHM_PLUGIN_URL . 'assets/admin.css', [], MHM_VERSION );
-		wp_enqueue_script( 'mavo-hub-manager', MHM_PLUGIN_URL . 'assets/admin.js', [], MHM_VERSION, true );
+		wp_enqueue_style( 'mavo-hub-manager', MHM_PLUGIN_URL . 'assets/admin.css', [], self::asset_version( 'assets/admin.css' ) );
+		wp_enqueue_script( 'mavo-hub-manager', MHM_PLUGIN_URL . 'assets/admin.js', [], self::asset_version( 'assets/admin.js' ), true );
 
 		wp_localize_script(
 			'mavo-hub-manager',
@@ -67,6 +67,22 @@ class MHM_Admin {
 				],
 			]
 		);
+	}
+
+	/**
+	 * Cache-busting version for one asset: its modification time, falling back
+	 * to the plugin version.
+	 *
+	 * Not MHM_VERSION alone. Editing the CSS without also bumping the constant
+	 * leaves every browser — and Cloudflare — serving the previous file against
+	 * the unchanged ?ver=, which is exactly how the relations graph once
+	 * rendered as black boxes with the labels beside them.
+	 */
+	private static function asset_version( string $relative ): string {
+		$path = MHM_PLUGIN_DIR . ltrim( $relative, '/' );
+		$time = file_exists( $path ) ? filemtime( $path ) : false;
+
+		return $time ? MHM_VERSION . '.' . $time : MHM_VERSION;
 	}
 
 	/* ------------------------------------------------------------- plumbing */

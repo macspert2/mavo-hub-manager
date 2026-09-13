@@ -3,7 +3,7 @@
  * Plugin Name: Mavo Hub Manager
  * Plugin URI:  https://mamanvoyage.com
  * Description: Editorial hub model for Maman Voyage. Marks posts/pages as geographic or thematic hubs and assigns one primary geo hub and one primary theme hub per child. Relationships are stored only on the child; hierarchy and reverse lists are inferred.
- * Version:     0.1.0
+ * Version:     0.4.0
  * Author:      Mavo
  * Text Domain: mavo-hub-manager
  * Requires at least: 6.3
@@ -12,7 +12,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MHM_VERSION',     '0.1.0' );
+define( 'MHM_VERSION',     '0.4.0' );
 define( 'MHM_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'MHM_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );
 define( 'MHM_PLUGIN_FILE', __FILE__ );

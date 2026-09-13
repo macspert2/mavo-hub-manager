@@ -263,8 +263,13 @@ class MHM_Graph {
 				continue;
 			}
 
+			// stroke= and the fill=/text-anchor= below are presentation
+			// attributes: any stylesheet rule outranks them, so they change
+			// nothing when the CSS is there and keep the figure readable when
+			// it is not (an SVG line has no stroke by default, and a rect is
+			// black).
 			printf(
-				'<line class="mhm-edge mhm-edge--%s" x1="%s" y1="%s" x2="%s" y2="%s" />',
+				'<line class="mhm-edge mhm-edge--%s" x1="%s" y1="%s" x2="%s" y2="%s" stroke="#c3c4c7" stroke-width="1.5" />',
 				esc_attr( $edge['type'] ?: 'none' ),
 				esc_attr( (string) round( $from['x'] + self::NODE_W / 2, 1 ) ),
 				esc_attr( (string) round( $from['y'], 1 ) ),
@@ -289,7 +294,8 @@ class MHM_Graph {
 
 		if ( 'more' === $node['role'] ) {
 			printf(
-				'<g class="%s"><rect x="%s" y="%s" width="%d" height="%d" rx="6" /><text x="%s" y="%s">%s</text></g>',
+				'<g class="%s"><rect x="%s" y="%s" width="%d" height="%d" rx="6" fill="#f0f0f1" stroke="#a7aaad" />'
+					. '<text x="%s" y="%s" text-anchor="middle" dominant-baseline="central" font-size="12">%s</text></g>',
 				esc_attr( $class ),
 				esc_attr( (string) $node['x'] ),
 				esc_attr( (string) $node['y'] ),
@@ -322,24 +328,26 @@ class MHM_Graph {
 		echo $open; // phpcs:ignore WordPress.Security.EscapeOutput -- escaped above.
 
 		printf(
-			'<rect x="%s" y="%s" width="%d" height="%d" rx="6" />',
+			'<rect x="%s" y="%s" width="%d" height="%d" rx="6" fill="%s" stroke="#a7aaad" stroke-width="1.5" />',
 			esc_attr( (string) $node['x'] ),
 			esc_attr( (string) $node['y'] ),
 			self::NODE_W,
-			self::NODE_H
+			self::NODE_H,
+			esc_attr( 'focus' === $node['role'] ? '#1d2327' : '#ffffff' )
 		);
 
 		printf(
-			'<text x="%s" y="%s">%s</text>',
+			'<text x="%s" y="%s" text-anchor="middle" dominant-baseline="central" font-size="12" fill="%s">%s</text>',
 			esc_attr( (string) ( $node['x'] + self::NODE_W / 2 ) ),
 			esc_attr( (string) ( $node['y'] + self::NODE_H / 2 ) ),
+			esc_attr( 'focus' === $node['role'] ? '#ffffff' : '#1d2327' ),
 			esc_html( ( 'focus' === $node['role'] ? '▶ ' : '' ) . $label )
 		);
 
 		// Hub type as a letter as well as a colour: colour is never the only cue.
 		if ( ! empty( $info['hub_type'] ) ) {
 			printf(
-				'<text class="mhm-node__badge" x="%s" y="%s">%s</text>',
+				'<text class="mhm-node__badge" x="%s" y="%s" text-anchor="middle" font-size="10" font-weight="700">%s</text>',
 				esc_attr( (string) ( $node['x'] + self::NODE_W - 9 ) ),
 				esc_attr( (string) ( $node['y'] + 12 ) ),
 				esc_html( 'geo' === $info['hub_type'] ? 'G' : 'T' )
