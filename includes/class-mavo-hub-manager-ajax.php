@@ -39,6 +39,10 @@ class MHM_Ajax {
 			wp_send_json_success( [ 'results' => [], 'message' => __( 'Type at least two characters.', 'mavo-hub-manager' ) ] );
 		}
 
+		if ( 'tag' === $context ) {
+			wp_send_json_success( [ 'results' => self::tag_results( $term ) ] );
+		}
+
 		$candidates = self::find_posts( $term );
 
 		if ( 'child' === $context ) {
@@ -48,6 +52,33 @@ class MHM_Ajax {
 		}
 
 		wp_send_json_success( [ 'results' => array_slice( $results, 0, self::MAX_RESULTS ) ] );
+	}
+
+	/**
+	 * Tags for the "add children by tag" picker.
+	 *
+	 * The same row shape the post searches return, so the one search widget in
+	 * admin.js renders all three without knowing what it is looking at.
+	 *
+	 * @return array[]
+	 */
+	private static function tag_results( string $term ): array {
+		$rows = [];
+
+		foreach ( MHM_Tags::search( $term, self::MAX_RESULTS ) as $tag ) {
+			$rows[] = [
+				'id'    => (int) $tag->term_id,
+				'title' => $tag->name,
+				'meta'  => sprintf(
+					/* translators: 1: tag slug, 2: number of posts carrying it */
+					_n( '%1$s · %2$d post', '%1$s · %2$d posts', (int) $tag->count, 'mavo-hub-manager' ),
+					$tag->slug,
+					(int) $tag->count
+				),
+			];
+		}
+
+		return $rows;
 	}
 
 	/* --------------------------------------------------------------- lookup */

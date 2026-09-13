@@ -61,6 +61,7 @@ class MHM_Admin {
 					'noResults' => __( 'No matching post or page.', 'mavo-hub-manager' ),
 					'error'     => __( 'The search failed. Please try again.', 'mavo-hub-manager' ),
 					'select'    => __( 'Select', 'mavo-hub-manager' ),
+					'choose'    => __( 'Use this tag', 'mavo-hub-manager' ),
 					'assign'    => __( 'Assign as child', 'mavo-hub-manager' ),
 					'conflict'  => __( 'has another primary hub', 'mavo-hub-manager' ),
 					'noHub'     => __( 'not a hub', 'mavo-hub-manager' ),
@@ -162,6 +163,11 @@ class MHM_Admin {
 		$redirect = [];
 		if ( $hub_id ) {
 			$redirect['hub'] = $hub_id;
+		}
+		foreach ( [ 'tag', 'tagp', 'tagstatus', 'tagsort' ] as $key ) {
+			if ( ! empty( $_POST[ $key ] ) ) {
+				$redirect[ $key ] = sanitize_key( wp_unslash( $_POST[ $key ] ) );
+			}
 		}
 		foreach ( [ 'htype', 'hlang' ] as $key ) {
 			if ( ! empty( $_POST[ $key ] ) ) {
@@ -322,7 +328,7 @@ class MHM_Admin {
 		$targets = array_filter( array_map( 'absint', $targets ) );
 
 		if ( ! $targets ) {
-			self::add_notice( 'warning', __( 'No linked posts were selected.', 'mavo-hub-manager' ) );
+			self::add_notice( 'warning', __( 'No posts were selected.', 'mavo-hub-manager' ) );
 
 			return $redirect;
 		}
@@ -386,7 +392,7 @@ class MHM_Admin {
 				'warning',
 				sprintf(
 					/* translators: %d: count */
-					_n( '%d cross-language link was ignored.', '%d cross-language links were ignored.', $cross, 'mavo-hub-manager' ),
+					_n( '%d cross-language post was ignored.', '%d cross-language posts were ignored.', $cross, 'mavo-hub-manager' ),
 					$cross
 				)
 			);
@@ -402,7 +408,11 @@ class MHM_Admin {
 			);
 		}
 
-		$redirect['scan'] = 1;
+		// Only the scanner's own form asks to be redrawn; the tag finder has
+		// its own view to return to and must not trigger a link scan.
+		if ( ! empty( $_POST['rescan'] ) ) {
+			$redirect['scan'] = 1;
+		}
 
 		return $redirect;
 	}
@@ -629,7 +639,7 @@ class MHM_Admin {
 
 	/** Hidden fields that carry the current view through a POST + redirect. */
 	private static function context_fields( array $context ): void {
-		foreach ( [ 'htype', 'hlang', 'hs' ] as $key ) {
+		foreach ( [ 'htype', 'hlang', 'hs', 'tag', 'tagp', 'tagstatus', 'tagsort' ] as $key ) {
 			if ( ! empty( $context[ $key ] ) ) {
 				printf(
 					'<input type="hidden" name="%s" value="%s" />',
@@ -648,9 +658,13 @@ class MHM_Admin {
 		}
 
 		$context = [
-			'htype' => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
-			'hlang' => isset( $_GET['hlang'] ) ? sanitize_key( wp_unslash( $_GET['hlang'] ) ) : '',
-			'hs'    => isset( $_GET['hs'] ) ? sanitize_text_field( wp_unslash( $_GET['hs'] ) ) : '',
+			'htype'     => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
+			'hlang'     => isset( $_GET['hlang'] ) ? sanitize_key( wp_unslash( $_GET['hlang'] ) ) : '',
+			'hs'        => isset( $_GET['hs'] ) ? sanitize_text_field( wp_unslash( $_GET['hs'] ) ) : '',
+			'tag'       => isset( $_GET['tag'] ) ? absint( wp_unslash( $_GET['tag'] ) ) : 0,
+			'tagp'      => isset( $_GET['tagp'] ) ? max( 1, absint( wp_unslash( $_GET['tagp'] ) ) ) : 1,
+			'tagstatus' => isset( $_GET['tagstatus'] ) && 'any' === $_GET['tagstatus'] ? 'any' : 'publish',
+			'tagsort'   => isset( $_GET['tagsort'] ) && 'views' === $_GET['tagsort'] ? 'views' : 'date',
 		];
 
 		$selected_id = isset( $_GET['hub'] ) ? absint( wp_unslash( $_GET['hub'] ) ) : 0;
@@ -677,6 +691,7 @@ class MHM_Admin {
 		if ( $selected ) {
 			self::render_detail( $selected, $context );
 			self::render_scanner( $selected, $context, $do_scan );
+			self::render_tag_finder( $selected, $context );
 			self::render_children( $selected, $context );
 			self::render_manual_add( $selected, $context );
 		} else {
@@ -1072,6 +1087,7 @@ class MHM_Admin {
 		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '" />';
 		echo '<input type="hidden" name="task" value="assign_children" />';
 		echo '<input type="hidden" name="hub" value="' . esc_attr( (string) $hub_id ) . '" />';
+		echo '<input type="hidden" name="rescan" value="1" />';
 		self::context_fields( $context );
 
 		echo '<table class="widefat striped mhm-table">';
@@ -1227,6 +1243,268 @@ class MHM_Admin {
 		}
 
 		echo '</div>';
+	}
+
+	/* ----------------------------------------------------------- tag finder */
+
+	/**
+	 * Find children by tag.
+	 *
+	 * The second discovery source. A tag says what a post is about; it is not
+	 * a relationship, so nothing about it is stored — the tag that matches the
+	 * hub's name is suggested each time instead.
+	 *
+	 * Rows are classified by MHM_Scanner::classify() and submitted to the same
+	 * assign_children task as the scanner, so the safety rules are not merely
+	 * similar to the scanner's, they are the same code.
+	 */
+	private static function render_tag_finder( int $hub_id, array $context ): void {
+		if ( ! taxonomy_exists( MHM_Tags::TAXONOMY ) ) {
+			return;
+		}
+
+		$type      = (string) MHM_Model::get_hub_type( $hub_id );
+		$suggested = MHM_Tags::suggest_for_hub( $hub_id );
+		$selected  = $context['tag'] ? MHM_Tags::get_tag( (int) $context['tag'] ) : null;
+
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Add children by tag', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'Lists the posts carrying one tag and offers them as children of this hub, with the same states and the same safety as the link scanner: an existing primary hub is never overwritten by a batch assign, cross-language posts are never assigned automatically, and unpublished posts are listed but never ticked for you.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Nothing about the tag is stored. The tag matching this hub\'s name is suggested each time.', 'mavo-hub-manager' ) . '</p>';
+
+		self::render_tag_picker( $hub_id, $context, $suggested, $selected );
+
+		if ( ! $selected ) {
+			echo '</div>';
+
+			return;
+		}
+
+		$found = MHM_Tags::candidates(
+			$hub_id,
+			(int) $selected->term_id,
+			[
+				'paged'  => (int) $context['tagp'],
+				'status' => (string) $context['tagstatus'],
+				'sort'   => (string) $context['tagsort'],
+			]
+		);
+
+		if ( is_wp_error( $found ) ) {
+			echo '<div class="notice notice-error inline"><p>' . esc_html( $found->get_error_message() ) . '</p></div></div>';
+
+			return;
+		}
+
+		self::render_tag_filters( $hub_id, $context, $selected );
+
+		if ( ! $found['rows'] ) {
+			echo '<p class="mhm-muted">' . esc_html__( 'No post carries this tag with these filters.', 'mavo-hub-manager' ) . '</p></div>';
+
+			return;
+		}
+
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		wp_nonce_field( self::ACTION );
+		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '" />';
+		echo '<input type="hidden" name="task" value="assign_children" />';
+		echo '<input type="hidden" name="hub" value="' . esc_attr( (string) $hub_id ) . '" />';
+		self::context_fields( $context );
+
+		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<th class="mhm-col-select"><input type="checkbox" data-mhm-check-all /></th>';
+		echo '<th>' . esc_html__( 'ID', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Title', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Status', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Views', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'State', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Current primary hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Action', 'mavo-hub-manager' ) . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach ( $found['rows'] as $row ) {
+			$post_id = (int) $row['id'];
+			$views   = MHM_Audit::get_views( $post_id );
+
+			echo '<tr>';
+			echo '<td>';
+			if ( MHM_Scanner::UNASSIGNED === $row['state'] ) {
+				printf(
+					'<input type="checkbox" name="targets[]" value="%d" %s />',
+					$post_id,
+					checked( (bool) $row['preselect'], true, false )
+				);
+			}
+			echo '</td>';
+			echo '<td>' . $post_id . '</td>';
+			echo '<td>' . self::post_link( $post_id );
+			if ( $row['reason'] ) {
+				echo '<br /><span class="mhm-muted">' . esc_html( $row['reason'] ) . '</span>';
+			}
+			echo '</td>';
+			echo '<td>' . esc_html( $row['status'] ) . '</td>';
+			echo '<td>' . self::lang_cell( $post_id ) . '</td>';
+			echo '<td class="mhm-col-num">' . ( null === $views ? '<span class="mhm-muted">—</span>' : esc_html( number_format_i18n( $views ) ) ) . '</td>';
+			echo '<td>' . self::state_badge( $row['state'] ) . '</td>';
+			echo '<td>';
+			if ( $row['current_hub'] ) {
+				echo self::post_link( (int) $row['current_hub']['id'] );
+			} else {
+				echo '<span class="mhm-muted">—</span>';
+			}
+			echo '</td>';
+			echo '<td>';
+			if ( MHM_Scanner::CONFLICT === $row['state'] ) {
+				self::row_action_button(
+					[ 'task' => 'move_child', 'hub' => $hub_id, 'child' => $post_id ],
+					$context,
+					__( 'Move primary hub here', 'mavo-hub-manager' ),
+					'button button-small',
+					sprintf(
+						/* translators: 1: child title, 2: current hub title */
+						__( 'Move "%1$s" away from "%2$s"? Its current primary hub will be replaced.', 'mavo-hub-manager' ),
+						get_the_title( $post_id ),
+						get_the_title( (int) $row['current_hub']['id'] )
+					),
+					true
+				);
+			} elseif ( MHM_Scanner::CROSS_LANGUAGE === $row['state'] ) {
+				self::row_action_button(
+					[ 'task' => 'add_child', 'hub' => $hub_id, 'child' => $post_id ],
+					$context,
+					__( 'Assign across languages', 'mavo-hub-manager' ),
+					'button button-small'
+				);
+			} elseif ( MHM_Scanner::ALREADY_ASSIGNED_HERE === $row['state'] ) {
+				self::row_action_button(
+					[ 'task' => 'remove_child', 'hub' => $hub_id, 'child' => $post_id, 'type' => $type ],
+					$context,
+					__( 'Remove assignment', 'mavo-hub-manager' ),
+					'button button-small button-link-delete',
+					__( 'Remove this primary hub assignment?', 'mavo-hub-manager' ),
+					true
+				);
+			} else {
+				echo '<span class="mhm-muted">—</span>';
+			}
+			echo '</td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table>';
+
+		echo '<p><button type="submit" class="button button-primary">' . esc_html__( 'Assign selected tagged posts', 'mavo-hub-manager' ) . '</button> ';
+		echo '<span class="description">' . esc_html(
+			sprintf(
+				/* translators: 1: unassigned, 2: assigned, 3: conflicts, 4: cross-language */
+				__( 'On this page: %1$d unassigned, %2$d already assigned here, %3$d conflicts, %4$d cross-language.', 'mavo-hub-manager' ),
+				$found['counts'][ MHM_Scanner::UNASSIGNED ],
+				$found['counts'][ MHM_Scanner::ALREADY_ASSIGNED_HERE ],
+				$found['counts'][ MHM_Scanner::CONFLICT ],
+				$found['counts'][ MHM_Scanner::CROSS_LANGUAGE ]
+			)
+		) . '</span></p>';
+		echo '</form>';
+
+		self::flush_deferred_forms();
+		self::render_tag_pagination( $hub_id, $context, (bool) $found['has_more'] );
+
+		echo '</div>';
+	}
+
+	/** Which tag to list: the suggestion, plus a search for any other. */
+	private static function render_tag_picker( int $hub_id, array $context, ?WP_Term $suggested, ?WP_Term $selected ): void {
+		if ( $selected ) {
+			printf(
+				'<p class="mhm-tag-current">%s <strong>%s</strong> <span class="mhm-muted">%s</span></p>',
+				esc_html__( 'Showing posts tagged', 'mavo-hub-manager' ),
+				esc_html( $selected->name ),
+				esc_html(
+					sprintf(
+						/* translators: 1: tag slug, 2: number of posts carrying it */
+						__( '(%1$s · %2$d posts)', 'mavo-hub-manager' ),
+						$selected->slug,
+						(int) $selected->count
+					)
+				)
+			);
+		} elseif ( $suggested ) {
+			printf(
+				'<p>%s <a class="button button-primary" href="%s">%s</a></p>',
+				esc_html__( 'This hub\'s name matches a tag:', 'mavo-hub-manager' ),
+				esc_url( self::page_url( array_filter( array_merge( $context, [ 'hub' => $hub_id, 'tag' => (int) $suggested->term_id, 'tagp' => 1 ] ) ) ) ),
+				esc_html(
+					sprintf(
+						/* translators: 1: tag name, 2: number of posts */
+						__( 'List the %1$d posts tagged "%2$s"', 'mavo-hub-manager' ),
+						(int) $suggested->count,
+						$suggested->name
+					)
+				)
+			);
+		} else {
+			echo '<p class="mhm-muted">' . esc_html__( 'No tag matches this hub\'s name. Search for one below.', 'mavo-hub-manager' ) . '</p>';
+		}
+
+		echo '<div class="mhm-search" data-mhm-search="tag">';
+		echo '<input type="search" class="regular-text" data-mhm-input placeholder="' . esc_attr__( 'Find another tag…', 'mavo-hub-manager' ) . '" />';
+		echo '<div class="mhm-search-results" data-mhm-results aria-live="polite"></div>';
+		echo '</div>';
+
+		echo '<form method="get" class="mhm-filters" data-mhm-tag-form hidden>';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
+		echo '<input type="hidden" name="hub" value="' . esc_attr( (string) $hub_id ) . '" />';
+		echo '<input type="hidden" name="tag" value="" data-mhm-tag-id />';
+		echo '<span>' . esc_html__( 'Selected:', 'mavo-hub-manager' ) . ' <strong data-mhm-tag-label></strong></span> ';
+		echo '<button type="submit" class="button button-primary">' . esc_html__( 'List tagged posts', 'mavo-hub-manager' ) . '</button> ';
+		echo '<button type="button" class="button" data-mhm-tag-cancel>' . esc_html__( 'Cancel', 'mavo-hub-manager' ) . '</button>';
+		echo '</form>';
+	}
+
+	private static function render_tag_filters( int $hub_id, array $context, WP_Term $selected ): void {
+		echo '<form method="get" class="mhm-filters">';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
+		echo '<input type="hidden" name="hub" value="' . esc_attr( (string) $hub_id ) . '" />';
+		echo '<input type="hidden" name="tag" value="' . esc_attr( (string) (int) $selected->term_id ) . '" />';
+
+		echo '<select name="tagstatus">';
+		printf( '<option value="publish" %s>%s</option>', selected( $context['tagstatus'], 'publish', false ), esc_html__( 'Published only', 'mavo-hub-manager' ) );
+		printf( '<option value="any" %s>%s</option>', selected( $context['tagstatus'], 'any', false ), esc_html__( 'Any status', 'mavo-hub-manager' ) );
+		echo '</select> ';
+
+		echo '<select name="tagsort">';
+		printf( '<option value="date" %s>%s</option>', selected( $context['tagsort'], 'date', false ), esc_html__( 'Newest first', 'mavo-hub-manager' ) );
+		printf( '<option value="views" %s>%s</option>', selected( $context['tagsort'], 'views', false ), esc_html__( 'Most viewed first (only posts with a counter)', 'mavo-hub-manager' ) );
+		echo '</select> ';
+
+		echo '<button type="submit" class="button">' . esc_html__( 'Apply', 'mavo-hub-manager' ) . '</button>';
+		echo '</form>';
+	}
+
+	private static function render_tag_pagination( int $hub_id, array $context, bool $has_more ): void {
+		$paged = (int) $context['tagp'];
+
+		if ( 1 === $paged && ! $has_more ) {
+			return;
+		}
+
+		$link = static function ( int $page ) use ( $hub_id, $context ): string {
+			return self::page_url( array_filter( array_merge( $context, [ 'hub' => $hub_id, 'tagp' => $page ] ) ) );
+		};
+
+		echo '<p class="mhm-pagination">';
+		if ( $paged > 1 ) {
+			echo '<a class="button" href="' . esc_url( $link( $paged - 1 ) ) . '">' . esc_html__( '‹ Previous', 'mavo-hub-manager' ) . '</a> ';
+		}
+		printf(
+			'<span class="mhm-muted">%s</span> ',
+			esc_html( sprintf( /* translators: %d: page number */ __( 'Page %d', 'mavo-hub-manager' ), $paged ) )
+		);
+		if ( $has_more ) {
+			echo '<a class="button" href="' . esc_url( $link( $paged + 1 ) ) . '">' . esc_html__( 'Next ›', 'mavo-hub-manager' ) . '</a>';
+		}
+		echo '</p>';
 	}
 
 	/* ------------------------------------------------------------- children */

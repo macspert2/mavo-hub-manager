@@ -420,8 +420,10 @@ is_same( true, $third['done'], 'the first short batch ends the scan' );
 is_same( [ 40 => 3, 41 => 1 ], $third['counts'], 'and changes nothing about the tally' );
 
 // Changing a filter must start a new scan rather than mix two of them.
-$switched = MHM_Audit::scan_candidates( [ 'status' => 'draft', 'batch' => 2 ], $second );
-is_same( 2, $switched['scanned'], 'changing a filter starts the scan over' );
+// Only post 40 is a page, so a narrowed scan restarts and finds just that one.
+$switched = MHM_Audit::scan_candidates( [ 'status' => 'any', 'post_type' => 'page', 'batch' => 2 ], $second );
+is_same( 1, $switched['scanned'], 'changing a filter starts the scan over rather than continuing it' );
+is_same( [ 40 => 3 ], $switched['counts'], 'and tallies only what the new filter matches' );
 ok(
 	MHM_Audit::candidates_signature( [ 'status' => 'draft' ] ) !== MHM_Audit::candidates_signature( [ 'status' => 'publish' ] ),
 	'each set of filters has its own signature'

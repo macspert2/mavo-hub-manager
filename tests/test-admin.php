@@ -30,7 +30,8 @@ render_page();
 
 echo "\nBatch assignment from the scanner\n";
 
-$redirect = post_task( [ 'task' => 'assign_children', 'hub' => 2, 'targets' => [ 3, 4, 6 ] ] );
+// rescan=1 is what the scanner's own form sends, and what asks for a redraw.
+$redirect = post_task( [ 'task' => 'assign_children', 'hub' => 2, 'targets' => [ 3, 4, 6 ], 'rescan' => 1 ] );
 
 is_same( 2, MHM_Model::get_primary_hub( 3, 'geo' ), 'the unassigned target was assigned' );
 is_same( 5, MHM_Model::get_primary_hub( 4, 'geo' ), 'the conflicting target was left alone' );
@@ -40,7 +41,7 @@ ok( str_contains( $redirect, 'scan=1' ), 'the redirect returns to the scan view'
 $notices = implode( ' | ', queued_notices() );
 ok( str_contains( $notices, '1 post assigned' ), 'the summary counts the assignment' );
 ok( str_contains( $notices, '1 conflict was left unchanged' ), 'the summary counts the conflict' );
-ok( str_contains( $notices, '1 cross-language link was ignored' ), 'the summary counts the cross-language link' );
+ok( str_contains( $notices, '1 cross-language post was ignored' ), 'the summary counts the cross-language post' );
 render_page();
 
 echo "\nDestructive actions need confirmation\n";
@@ -85,6 +86,33 @@ post_task( [ 'task' => 'remove_child', 'hub' => 1, 'child' => 3, 'type' => 'geo'
 is_same( 1, MHM_Model::get_primary_hub( 3, 'geo' ), 'removal without confirmation is refused' );
 post_task( [ 'task' => 'remove_child', 'hub' => 1, 'child' => 3, 'type' => 'geo', 'mhm_confirm' => 1 ] );
 is_same( null, MHM_Model::get_primary_hub( 3, 'geo' ), 'the confirmed removal went through' );
+render_page();
+
+echo "\nFinding children by tag\n";
+
+$italie = mock_term( 30, 'Paris en famille', 'paris-en-famille', 2 );
+mock_tag_post( 3, 30 );  // Le Louvre carries the tag
+mock_tag_post( 6, 30 );  // the English post does too
+
+$html = render_page( [ 'page' => 'mavo-hub-manager', 'hub' => 2 ] );
+ok( str_contains( $html, 'Add children by tag' ), 'the tag finder renders for a selected hub' );
+ok( str_contains( $html, 'name matches a tag' ), 'and suggests the tag matching the hub name' );
+ok( ! str_contains( $html, 'Assign selected tagged posts' ), 'but lists nothing until a tag is chosen' );
+
+$html = render_page( [ 'page' => 'mavo-hub-manager', 'hub' => 2, 'tag' => 30, 'tagstatus' => 'any' ] );
+ok( str_contains( $html, 'Assign selected tagged posts' ), 'choosing a tag lists its posts' );
+ok( str_contains( $html, 'Le Louvre' ), 'including the tagged post' );
+ok( str_contains( $html, 'Cross-language' ), 'and flagging the one in another language' );
+
+// Assigning from the tag list uses the scanner's own task, and must not
+// trigger a link re-scan on the way back.
+MHM_Model::remove_primary_hub( 3, 'geo' );
+$redirect = post_task( [ 'task' => 'assign_children', 'hub' => 2, 'targets' => [ 3, 6 ], 'tag' => 30 ] );
+
+is_same( 2, MHM_Model::get_primary_hub( 3, 'geo' ), 'the ticked tagged post was assigned' );
+is_same( null, MHM_Model::get_primary_hub( 6, 'geo' ), 'the cross-language one was not' );
+ok( str_contains( $redirect, 'tag=30' ), 'and the redirect returns to the same tag list' );
+ok( ! str_contains( $redirect, 'scan=1' ), 'without re-scanning the hub for links' );
 render_page();
 
 echo "\nPage rendering\n";

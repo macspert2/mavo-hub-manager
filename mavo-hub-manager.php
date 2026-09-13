@@ -19,6 +19,7 @@ define( 'MHM_PLUGIN_FILE', __FILE__ );
 
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-model.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-scanner.php';
+require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-tags.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-ajax.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-admin.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit.php';

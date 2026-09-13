@@ -12,6 +12,8 @@ $GLOBALS['MOCK_POSTS']   = []; // id => WP_Post-ish array
 $GLOBALS['MOCK_META']    = []; // id => [ key => value ]
 $GLOBALS['MOCK_ACTIONS'] = []; // recorded do_action() calls
 $GLOBALS['MOCK_HOME']    = 'https://www.mamanvoyage.com';
+$GLOBALS['MOCK_TERMS']      = []; // term_id => WP_Term
+$GLOBALS['MOCK_POST_TERMS'] = []; // post_id => term_ids
 $GLOBALS['MOCK_PLL']     = false;
 
 class WP_Post {
@@ -124,6 +126,68 @@ function delete_post_meta( $post_id, $key ) {
 	return true;
 }
 
+/* ------------------------------------------------------------------ terms */
+
+class WP_Term {
+	public $term_id = 0;
+	public $name = '';
+	public $slug = '';
+	public $taxonomy = 'post_tag';
+	public $count = 0;
+}
+
+function mock_term( int $id, string $name, string $slug = '', int $count = 0 ): WP_Term {
+	$term           = new WP_Term();
+	$term->term_id  = $id;
+	$term->name     = $name;
+	$term->slug     = $slug ?: sanitize_title_stub( $name );
+	$term->count    = $count;
+
+	$GLOBALS['MOCK_TERMS'][ $id ] = $term;
+
+	return $term;
+}
+
+/** Give a post a tag. */
+function mock_tag_post( int $post_id, int $term_id ): void {
+	$GLOBALS['MOCK_POST_TERMS'][ $post_id ][] = $term_id;
+}
+
+function taxonomy_exists( $taxonomy ) { return 'post_tag' === $taxonomy; }
+function sanitize_title( $title ) { return sanitize_title_stub( (string) $title ); }
+
+function get_term( $term_id, $taxonomy = '' ) {
+	return $GLOBALS['MOCK_TERMS'][ (int) $term_id ] ?? null;
+}
+
+function get_term_by( $field, $value, $taxonomy = '' ) {
+	foreach ( $GLOBALS['MOCK_TERMS'] as $term ) {
+		if ( 'slug' === $field && $term->slug === (string) $value ) { return $term; }
+		if ( 'name' === $field && $term->name === (string) $value ) { return $term; }
+		if ( 'id' === $field && $term->term_id === (int) $value ) { return $term; }
+	}
+
+	return false;
+}
+
+function get_terms( array $args = [] ) {
+	$search = (string) ( $args['search'] ?? '' );
+	$found  = [];
+
+	foreach ( $GLOBALS['MOCK_TERMS'] as $term ) {
+		if ( '' !== $search && false === stripos( $term->name, $search ) && false === stripos( $term->slug, $search ) ) {
+			continue;
+		}
+		$found[] = $term;
+	}
+
+	usort( $found, static fn( $a, $b ) => $b->count <=> $a->count );
+
+	$number = (int) ( $args['number'] ?? 0 );
+
+	return $number > 0 ? array_slice( $found, 0, $number ) : $found;
+}
+
 /* ------------------------------------------------------------ shortcodes */
 
 /** Simplified core shortcode_parse_atts(): quoted and bare key=value pairs. */
@@ -174,7 +238,12 @@ class WP_Query {
 
 		foreach ( $GLOBALS['MOCK_POSTS'] as $id => $post ) {
 			if ( ! in_array( $post->post_type, $types, true ) ) { continue; }
+
+			$status = (string) ( $args['post_status'] ?? 'any' );
+			if ( 'any' !== $status && $post->post_status !== $status ) { continue; }
+
 			if ( ! self::matches_meta( $id, $args ) ) { continue; }
+			if ( ! self::matches_terms( $id, $args ) ) { continue; }
 			if ( ! self::matches_search( $post, $args ) ) { continue; }
 
 			$found[] = (int) $id;
@@ -229,6 +298,20 @@ class WP_Query {
 			if ( 'NOT EXISTS' === $compare && '' !== $stored ) { return false; }
 			if ( 'IN' === $compare && ! in_array( $stored, array_map( 'strval', (array) $clause['value'] ), true ) ) { return false; }
 			if ( '=' === $compare && isset( $clause['value'] ) && $stored !== (string) $clause['value'] ) { return false; }
+		}
+
+		return true;
+	}
+
+	private static function matches_terms( int $id, array $args ): bool {
+		foreach ( (array) ( $args['tax_query'] ?? [] ) as $clause ) {
+			if ( ! is_array( $clause ) || empty( $clause['terms'] ) ) { continue; }
+
+			$has = array_map( 'intval', $GLOBALS['MOCK_POST_TERMS'][ $id ] ?? [] );
+
+			if ( ! array_intersect( $has, array_map( 'intval', (array) $clause['terms'] ) ) ) {
+				return false;
+			}
 		}
 
 		return true;
@@ -324,8 +407,10 @@ function reset_store(): void {
 	$GLOBALS['MOCK_POSTS']   = [];
 	$GLOBALS['MOCK_META']    = [];
 	$GLOBALS['MOCK_LANG']    = [];
-	$GLOBALS['MOCK_ACTIONS'] = [];
-	$GLOBALS['MOCK_PLL']     = false;
+	$GLOBALS['MOCK_ACTIONS']    = [];
+	$GLOBALS['MOCK_PLL']        = false;
+	$GLOBALS['MOCK_TERMS']      = [];
+	$GLOBALS['MOCK_POST_TERMS'] = [];
 }
 
 function finish(): void {
@@ -340,5 +425,6 @@ function finish(): void {
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-model.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-scanner.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-audit.php';
+require_once __DIR__ . '/../includes/class-mavo-hub-manager-tags.php';
 
 reset_store();

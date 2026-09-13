@@ -14,6 +14,8 @@
 
 	/** Meta line under a result title: type · status · language · hub type. */
 	function metaLine( row ) {
+		if ( row.meta ) { return row.meta; } // Tags describe themselves.
+
 		var bits = [ '#' + row.id, row.post_type, row.status ];
 		if ( row.lang ) { bits.push( row.lang ); }
 		if ( row.hub_type ) {
@@ -26,7 +28,7 @@
 	}
 
 	function targets( context ) {
-		var prefix = 'mark' === context ? 'mark' : 'child';
+		var prefix = ( 'mark' === context || 'tag' === context ) ? context : 'child';
 		return {
 			form: document.querySelector( '[data-mhm-' + prefix + '-form]' ),
 			id: document.querySelector( '[data-mhm-' + prefix + '-id]' ),
@@ -50,7 +52,7 @@
 			if ( ! t.form || ! t.id || ! t.label ) { return; }
 
 			t.id.value = row.id;
-			t.label.textContent = row.title + ' (#' + row.id + ')';
+			t.label.textContent = 'tag' === context ? row.title : row.title + ' (#' + row.id + ')';
 			t.form.hidden = false;
 			results.innerHTML = '';
 			input.value = '';
@@ -69,7 +71,11 @@
 
 			rows.forEach( function ( row ) {
 				var item = el( 'li' );
-				var button = el( 'button', 'button button-small', 'mark' === context ? i18n.select : i18n.assign );
+				var label = i18n.assign;
+				if ( 'mark' === context ) { label = i18n.select; }
+				if ( 'tag' === context ) { label = i18n.choose; }
+
+				var button = el( 'button', 'button button-small', label );
 
 				button.type = 'button';
 				button.addEventListener( 'click', function () { choose( row ); } );

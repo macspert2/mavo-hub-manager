@@ -56,6 +56,7 @@ function remove_filter( ...$args ) {}
 function add_management_page( ...$args ) {}
 
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-graph.php';
+require_once __DIR__ . '/../includes/class-mavo-hub-manager-tags.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-admin.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-audit-admin.php';
 

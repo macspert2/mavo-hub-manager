@@ -56,7 +56,8 @@ Broader relationships come from the hierarchy.
    cross-language parent).
 4. **Internal-link scanner** — parses the hub's stored content, resolves internal links
    to post/page IDs and classifies each one.
-5. **Direct children** and **manual child assignment**.
+5. **Add children by tag** — see below.
+6. **Direct children** and **manual child assignment**.
 
 **Tools → Hub Audit** (`manage_options`) holds the site-wide reports — see below. They
 are deliberately on a separate screen so they never run as a side effect of managing one
@@ -76,6 +77,32 @@ hub.
 A scan **never** writes anything, and the batch assign re-classifies every checked row
 server-side before writing — a stale form cannot overwrite a primary hub that appeared in
 the meantime. Nothing is written by merely opening the page or saving a post.
+
+### Finding children by tag
+
+The internal-link scanner is one way to discover children; a tag is another. On a selected
+hub, **Add children by tag** lists the posts carrying one tag and offers them as children —
+so the hub `/italie/` can gather every post tagged *italie* in one pass.
+
+It is deliberately the *same* machinery, not a parallel one. Every row is classified by
+`MHM_Scanner::classify()` and submitted to the same `assign_children` task the scanner
+uses, which means the guarantees are the same code rather than merely the same intent:
+
+* an existing primary hub is **never** overwritten by a batch assign — conflicts get an
+  explicit, confirmed *Move primary hub here* instead;
+* cross-language posts are listed as a diagnostic and never assigned automatically;
+* unpublished posts are listed but never ticked for you;
+* every checked row is re-classified server-side before anything is written.
+
+**Nothing about the tag is stored.** The tag whose slug or name matches the hub is
+suggested each time (`/italie/` → *italie*, falling back to the hub's title), and any other
+tag can be picked from a search box. A tag is a signal about what a post is *about*; the
+source of truth stays the child's own primary-hub meta, exactly as with links.
+
+Published-only by default with an *Any status* option, newest first with an optional
+most-viewed order (which, as elsewhere, joins the counter and so lists only posts that have
+one), and paged 50 at a time by fetching one row beyond the page rather than counting the
+whole tag.
 
 ### Link vs. assignment
 
@@ -388,6 +415,7 @@ No WordPress required; the harness stubs what the model and scanner call.
 |---|---|
 | `test-model.php` | marking, relationship validity, hierarchy, cycles, confirmed type changes |
 | `test-scanner.php` | URL resolution, classification, reverse grouping |
+| `test-tags.php` | tag suggestion by hub name, tagged-post listing, classification, paging |
 | `test-polylang.php` | language reporting, same vs cross language |
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
