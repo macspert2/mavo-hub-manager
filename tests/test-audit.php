@@ -427,6 +427,95 @@ ok(
 	'each set of filters has its own signature'
 );
 
+/* ----------------------------------------------------------- hub traffic */
+
+reset_store();
+MHM_Audit::flush_caches();
+
+// France ← Paris ← Paris en famille, with articles at two depths.
+mock_post( 50, [ 'post_type' => 'page', 'post_title' => 'France', 'post_name' => 'france' ] );
+mock_post( 51, [ 'post_type' => 'page', 'post_title' => 'Paris', 'post_name' => 'paris' ] );
+mock_post( 52, [ 'post_type' => 'page', 'post_title' => 'Paris en famille', 'post_name' => 'pef' ] );
+mock_post( 53, [ 'post_type' => 'page', 'post_title' => 'City trips', 'post_name' => 'city-trips' ] );
+
+foreach ( [ 50, 51, 52 ] as $hub ) {
+	MHM_Model::set_hub_type( $hub, 'geo' );
+}
+MHM_Model::set_hub_type( 53, 'theme' );
+
+MHM_Model::set_primary_hub( 51, 50, 'geo' );
+MHM_Model::set_primary_hub( 52, 51, 'geo' );
+
+mock_post( 54, [ 'post_title' => 'Article A', 'post_name' => 'article-a' ] );
+mock_post( 55, [ 'post_title' => 'Article B', 'post_name' => 'article-b' ] );
+MHM_Model::set_primary_hub( 54, 52, 'geo' );
+MHM_Model::set_primary_hub( 55, 51, 'geo' );
+MHM_Model::set_primary_hub( 54, 53, 'theme' );
+
+update_post_meta( 50, 'views', 100 );   // France, the hub page itself
+update_post_meta( 51, 'views', 200 );   // Paris
+update_post_meta( 52, 'views', 40 );    // Paris en famille
+update_post_meta( 54, 'views', 1000 );  // Article A
+update_post_meta( 55, 'views', 7 );     // Article B
+
+$traffic = MHM_Audit::hub_traffic();
+$by_hub  = [];
+foreach ( $traffic['rows'] as $row ) {
+	$by_hub[ $row['hub'] ] = $row;
+}
+
+// France owns Paris, Paris en famille and both articles, at three depths.
+is_same( 4, $by_hub[50]['posts'], 'a hub owns everything below it, at any depth' );
+is_same( 1, $by_hub[50]['direct'], 'while its direct children are only the first level' );
+is_same( 1247, $by_hub[50]['subtree'], 'the traffic below it is the sum of all of them' );
+is_same( 100, $by_hub[50]['own'], 'its own page views are kept separate' );
+is_same( 1347, $by_hub[50]['total'], 'and added for the total it owns' );
+
+is_same( 3, $by_hub[51]['posts'], 'Paris owns its sub-hub, that sub-hub\'s article, and its own' );
+is_same( 1047, $by_hub[51]['subtree'], 'counting through the sub-hub as well as directly' );
+is_same( 1000, $by_hub[52]['subtree'], 'the nearest hub owns just its own child' );
+is_same( 312, $by_hub[50]['per_child'], 'views per post owned is the subtree average, rounded' );
+
+// The thematic side counts the same article again, deliberately.
+is_same( 1000, $by_hub[53]['subtree'], 'a post owned by two hub types is counted under each' );
+is_same( 'theme', $by_hub[53]['type'], 'and the row says which hierarchy it belongs to' );
+
+is_same( 4, $traffic['summary']['hubs'], 'every hub gets a row' );
+is_same( 0, $traffic['summary']['without_views'], 'each of these hubs owns some traffic' );
+
+// Sorting picks a different winner per question.
+is_same( 50, MHM_Audit::hub_traffic( [ 'sort' => 'total' ] )['rows'][0]['hub'], 'most traffic owned puts France first' );
+is_same( 50, MHM_Audit::hub_traffic( [ 'sort' => 'children' ] )['rows'][0]['hub'], 'so does most posts owned' );
+is_same( 52, MHM_Audit::hub_traffic( [ 'sort' => 'per_child' ] )['rows'][0]['hub'], 'but per post the nearest hub wins' );
+
+is_same( 1, count( MHM_Audit::hub_traffic( [ 'type' => 'theme' ] )['rows'] ), 'the type filter narrows the report' );
+
+// A hub with nothing under it still appears, at zero.
+mock_post( 56, [ 'post_type' => 'page', 'post_title' => 'Empty hub', 'post_name' => 'empty-hub' ] );
+MHM_Model::set_hub_type( 56, 'geo' );
+
+$with_empty = MHM_Audit::hub_traffic();
+$empty_row  = null;
+foreach ( $with_empty['rows'] as $row ) {
+	if ( 56 === $row['hub'] ) {
+		$empty_row = $row;
+	}
+}
+is_same( 0, $empty_row['total'] ?? -1, 'a hub owning nothing reports zero rather than vanishing' );
+is_same( 1, $with_empty['summary']['without_views'], 'and is counted as owning no traffic' );
+
+// A cycle in the stored data must not spin the roll-up.
+MHM_Model::set_hub_type( 57, 'geo' );
+mock_post( 57, [ 'post_type' => 'page', 'post_title' => 'Loop A', 'post_name' => 'loop-a' ] );
+mock_post( 58, [ 'post_type' => 'page', 'post_title' => 'Loop B', 'post_name' => 'loop-b' ] );
+MHM_Model::set_hub_type( 57, 'geo' );
+MHM_Model::set_hub_type( 58, 'geo' );
+update_post_meta( 57, MHM_Model::META_GEO_HUB, 58 );
+update_post_meta( 58, MHM_Model::META_GEO_HUB, 57 );
+
+$looped = MHM_Audit::hub_traffic();
+ok( is_array( $looped['rows'] ), 'a cycle in the stored data is walked safely' );
+
 /* -------------------------------------------------------- post relations */
 
 reset_store();

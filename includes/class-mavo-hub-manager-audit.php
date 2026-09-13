@@ -10,8 +10,9 @@
  *   2. Which pages look like hubs but are not marked as one?
  *   3. Which children never link back to the hub that owns them?
  *   4. What is one post related to, through its hubs?
- *   5. How healthy is each hub (children, parent, stale links, issues)?
- *   6. Which stored relationships are broken? (delegates to MHM_Model)
+ *   5. How much traffic does each hub own, counting everything below it?
+ *   6. How healthy is each hub (children, parent, stale links, issues)?
+ *   7. Which stored relationships are broken? (delegates to MHM_Model)
  *
  * Everything is derived from the same three meta keys. No audit result is
  * cached in post meta, and no audit run repairs anything.
@@ -1011,7 +1012,251 @@ class MHM_Audit {
 		];
 	}
 
-	/* --------------------------------------------------- 5. hub health report */
+	/* ------------------------------------------------------- 5. hub traffic */
+
+	/**
+	 * child ID => hub ID for one type, in a single query.
+	 *
+	 * Returns null when there is no $wpdb to ask, and the caller falls back to
+	 * the model helpers — which is what the test harness runs on.
+	 */
+	public static function relationship_map( string $type ): ?array {
+		global $wpdb;
+
+		$key = MHM_Model::meta_key_for_type( $type );
+
+		if ( ! $key || ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return null;
+		}
+
+		$placeholders = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table names and generated placeholders.
+				"SELECT pm.post_id AS child, pm.meta_value AS hub
+				 FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				 WHERE pm.meta_key = %s
+				   AND p.post_type IN ( {$placeholders} )",
+				// phpcs:enable
+				array_merge( [ $key ], MHM_Model::POST_TYPES )
+			)
+		);
+
+		$map = [];
+		foreach ( (array) $rows as $row ) {
+			$child = absint( $row->child );
+			$hub   = absint( $row->hub );
+
+			if ( $child && $hub && $child !== $hub ) {
+				$map[ $child ] = $hub;
+			}
+		}
+
+		return $map;
+	}
+
+	/**
+	 * post ID => view count, for the posts named, in chunked queries.
+	 *
+	 * Null without $wpdb, as above.
+	 */
+	public static function views_map( array $post_ids ): ?array {
+		global $wpdb;
+
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return null;
+		}
+
+		$post_ids = array_values( array_unique( array_filter( array_map( 'absint', $post_ids ) ) ) );
+		$views    = [];
+
+		foreach ( array_chunk( $post_ids, 2000 ) as $chunk ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $chunk ), '%d' ) );
+
+			$rows = $wpdb->get_results(
+				$wpdb->prepare(
+					// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name and generated placeholders.
+					"SELECT post_id, meta_value
+					 FROM {$wpdb->postmeta}
+					 WHERE meta_key = %s
+					   AND post_id IN ( {$placeholders} )",
+					// phpcs:enable
+					array_merge( [ self::views_meta_key() ], $chunk )
+				)
+			);
+
+			foreach ( (array) $rows as $row ) {
+				$views[ absint( $row->post_id ) ] = (int) $row->meta_value;
+			}
+		}
+
+		return $views;
+	}
+
+	/**
+	 * Traffic each hub owns: its own views, plus the views of everything below
+	 * it in its own hierarchy.
+	 *
+	 * "Below it" is the same inferred descent every other screen uses — the
+	 * children's stored primary hubs, followed downwards — so a country hub
+	 * counts the traffic of its cities and of their articles. Nothing is
+	 * stored; the roll-up is recomputed each run from two queries plus the hub
+	 * registry.
+	 *
+	 * @param array $args type, lang, search, sort (total|subtree|children|per_child).
+	 * @return array{rows:array,summary:array}
+	 */
+	public static function hub_traffic( array $args = [] ): array {
+		$type_filter = isset( $args['type'] ) && MHM_Model::is_valid_type( (string) $args['type'] ) ? (string) $args['type'] : '';
+		$sort        = isset( $args['sort'] ) && in_array( $args['sort'], [ 'total', 'subtree', 'children', 'per_child' ], true )
+			? (string) $args['sort']
+			: 'total';
+
+		$rows    = [];
+		$summary = [ 'hubs' => 0, 'views' => 0, 'posts' => 0, 'without_views' => 0 ];
+
+		foreach ( MHM_Model::types() as $type ) {
+			if ( $type_filter && $type !== $type_filter ) {
+				continue;
+			}
+
+			$hubs = MHM_Model::get_hubs(
+				[
+					'type'   => $type,
+					'lang'   => isset( $args['lang'] ) ? (string) $args['lang'] : '',
+					'search' => isset( $args['search'] ) ? (string) $args['search'] : '',
+				]
+			);
+
+			if ( ! $hubs ) {
+				continue;
+			}
+
+			$children_of = self::children_map( $type );
+			$needed      = array_merge( $hubs, array_keys( $children_of ), ...array_values( $children_of ) );
+			$views       = self::views_map( $needed );
+
+			if ( null === $views ) {
+				$views = [];
+				foreach ( array_unique( array_map( 'absint', $needed ) ) as $id ) {
+					$counted = self::get_views( (int) $id );
+
+					if ( null !== $counted ) {
+						$views[ (int) $id ] = $counted;
+					}
+				}
+			}
+
+			self::prime( $hubs );
+
+			foreach ( $hubs as $hub_id ) {
+				$hub_id = (int) $hub_id;
+
+				$descendants   = self::subtree( $hub_id, $children_of );
+				$subtree_views = 0;
+
+				foreach ( $descendants as $descendant ) {
+					$subtree_views += (int) ( $views[ $descendant ] ?? 0 );
+				}
+
+				$own   = (int) ( $views[ $hub_id ] ?? 0 );
+				$posts = count( $descendants );
+
+				$rows[] = [
+					'hub'       => $hub_id,
+					'type'      => $type,
+					'lang'      => MHM_Model::get_language( $hub_id ),
+					'direct'    => count( $children_of[ $hub_id ] ?? [] ),
+					'posts'     => $posts,
+					'own'       => $own,
+					'subtree'   => $subtree_views,
+					'total'     => $own + $subtree_views,
+					'per_child' => $posts ? (int) round( $subtree_views / $posts ) : 0,
+				];
+
+				$summary['hubs']++;
+				$summary['views'] += $own + $subtree_views;
+				$summary['posts'] += $posts;
+
+				if ( ! $own && ! $subtree_views ) {
+					$summary['without_views']++;
+				}
+			}
+		}
+
+		usort(
+			$rows,
+			static fn( $a, $b ) => [ $b[ $sort ], $b['total'] ] <=> [ $a[ $sort ], $a['total'] ]
+		);
+
+		return [ 'rows' => $rows, 'summary' => $summary, 'sort' => $sort ];
+	}
+
+	/** hub ID => child IDs, for one type, however the data can be read. */
+	private static function children_map( string $type ): array {
+		$map         = self::relationship_map( $type );
+		$children_of = [];
+
+		if ( null !== $map ) {
+			foreach ( $map as $child => $hub ) {
+				$children_of[ $hub ][] = $child;
+			}
+
+			return $children_of;
+		}
+
+		// No $wpdb: ask the model, hub by hub. Every hub of the type, not just
+		// the filtered ones, or a subtree could stop at a hub outside the filter.
+		foreach ( MHM_Model::get_hubs( [ 'type' => $type ] ) as $hub_id ) {
+			$children = MHM_Model::get_hub_children( (int) $hub_id, $type );
+
+			if ( $children ) {
+				$children_of[ (int) $hub_id ] = array_map( 'absint', $children );
+			}
+		}
+
+		return $children_of;
+	}
+
+	/**
+	 * Every post below one hub, at any depth.
+	 *
+	 * Breadth-first with a seen set and the model's depth ceiling, so a cycle
+	 * that slipped in cannot spin here.
+	 *
+	 * @return int[]
+	 */
+	private static function subtree( int $hub_id, array $children_of ): array {
+		$found   = [];
+		$seen    = [ $hub_id => true ];
+		$current = [ $hub_id ];
+
+		for ( $depth = 0; $depth < MHM_Model::MAX_DEPTH && $current; $depth++ ) {
+			$next = [];
+
+			foreach ( $current as $parent ) {
+				foreach ( $children_of[ $parent ] ?? [] as $child ) {
+					$child = (int) $child;
+
+					if ( isset( $seen[ $child ] ) ) {
+						continue;
+					}
+
+					$seen[ $child ] = true;
+					$found[]        = $child;
+					$next[]         = $child;
+				}
+			}
+
+			$current = $next;
+		}
+
+		return $found;
+	}
+
+	/* --------------------------------------------------- 6. hub health report */
 
 	/**
 	 * Direct child counts for every hub at once, as hub ID => count.

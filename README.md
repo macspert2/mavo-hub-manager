@@ -93,7 +93,7 @@ changes, so no dangling primary hub IDs are left behind.
 
 ## Audit
 
-Six on-demand reports, each its own tab, all read-only apart from one explicit
+Seven on-demand reports, each its own tab, all read-only apart from one explicit
 *Remove relationship* button.
 
 | Tab | Question it answers |
@@ -102,8 +102,54 @@ Six on-demand reports, each its own tab, all read-only apart from one explicit
 | **Hub candidates** | which posts/pages are not marked as a hub yet, ranked by how many internal links their content contains |
 | **No link back to hub** | which children point at a hub whose page they never link back to |
 | **Post relations** | one post drawn in place: its hubs, what sits above them, its siblings and (optionally) its cousins |
+| **Hub traffic** | how much traffic each hub owns, counting everything below it in its hierarchy |
 | **Hub health** | per hub: parent, depth, derived child count, hierarchy problems, and optionally the stale/unassigned link comparison |
 | **Relationship errors** | the site-wide diagnostics: missing target, wrong hub type, self-reference, cycle, cross-language |
+
+### Assigning from the post side
+
+*Posts without a hub* is not only a report: tick any rows, choose a hub from the bar above
+the table, and **Assign selected posts** fills their empty slot. The hub's own type decides
+which of the two meta keys is written — a hub is exactly one type, so there is nothing else
+to ask — and when a language filter is on, only hubs in that language are offered.
+
+It obeys the same three rules as the scanner, for the same reasons:
+
+* every write goes through `mavo_set_primary_hub()`, so existence, post type, hub type,
+  self-reference and cycles are re-validated at write time — a stale form cannot force a
+  bad relationship;
+* a slot that has filled up since the list was drawn is **skipped, never overwritten**;
+  moving a post that already has a hub stays an explicit, confirmed act in Hub Manager;
+* a cross-language pair is never assigned automatically.
+
+The result is reported the way every other mutation is: *"12 posts assigned to the
+Geographic hub "Paris en famille". 2 posts already had a primary hub of this type and were
+left unchanged. 1 post is in another language and was not assigned."*
+
+### Hub traffic
+
+What a hub is worth editorially is not its own page views but the traffic of everything it
+owns. This report sums the `views` meta of each hub **and of every post below it at any
+depth**, followed through the same inferred hierarchy as everywhere else — so a country hub
+counts its cities and their articles.
+
+| Column | Meaning |
+|---|---|
+| Direct children | first level only |
+| Posts owned | the whole subtree, any depth |
+| Hub views | the hub page itself |
+| Views below | the subtree, excluding the hub |
+| Total owned | the two added |
+| Per post | subtree views ÷ posts owned — a small hub with one strong article ranks high here |
+
+Sort by any of those to ask a different question: *which hubs carry the site*, *which own a
+lot of posts but little traffic*, *which own little but convert*. A post owned by both a
+geographic and a thematic hub is counted under each, so the totals overlap by design and are
+not a site total — the summary line says so.
+
+Cost: two queries per hub type (the relationship rows, then the view counters for exactly
+those posts) plus the hub registry, then the roll-up happens in PHP with a seen-set and the
+model's depth ceiling, so a cycle in stored data cannot spin it.
 
 ### Hub candidates
 
@@ -346,8 +392,8 @@ No WordPress required; the harness stubs what the model and scanner call.
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
 | `test-admin.php` | admin-post routing, confirmations, page rendering |
-| `test-audit.php` | relation graphs (hubs, ancestors, siblings, cousins, caps), link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), candidate counting and batched scanning, views meta, hub health |
-| `test-audit-admin.php` | every audit tab renders, the graph draws and links, writes nothing, the candidate scan caches rather than stores, and removal redirects back |
+| `test-audit.php` | traffic roll-up through a subtree, relation graphs (hubs, ancestors, siblings, cousins, caps), link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), candidate counting and batched scanning, views meta, hub health |
+| `test-audit-admin.php` | every audit tab renders, batch assignment skips taken slots and cross-language pairs, the graph draws and links, writes nothing, the candidate scan caches rather than stores, and removal redirects back |
 
 ## Out of scope for V0
 

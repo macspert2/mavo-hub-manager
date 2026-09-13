@@ -77,6 +77,57 @@ ok( str_contains( $ran, 'stored relationship(s) inspected' ), 'the run parameter
 
 is_same( $before, $GLOBALS['MOCK_META'], 'rendering an audit tab writes nothing' );
 
+echo "\nAssigning from the post side\n";
+
+$list = render_audit( [ 'tab' => 'missing', 'run' => 1, 'sort' => 'views' ] );
+ok( str_contains( $list, 'name="targets[]"' ), 'rows can be ticked' );
+ok( str_contains( $list, 'Assign selected posts' ), 'and assigned in one go' );
+ok( str_contains( $list, 'data-mhm-check-all' ), 'with a select-all box' );
+
+// Tour Eiffel (4) has no geographic hub; Paris en famille (2) is one.
+$_GET = [];
+try {
+	$_POST = [ 'task' => 'assign_hub', 'hub' => 2, 'targets' => [ 4 ], 'tab' => 'missing', 'run' => '1' ];
+	MHM_Audit_Admin::handle_post();
+} catch ( MHM_Redirect $redirect ) {
+	// Expected.
+}
+
+is_same( 2, MHM_Model::get_primary_hub( 4, 'geo' ), 'the ticked post was assigned to the chosen hub' );
+ok( str_contains( implode( ' ', queued_notices() ), '1 post assigned' ), 'and the result is reported' );
+
+// A slot that is already taken is skipped, never overwritten.
+try {
+	$_POST = [ 'task' => 'assign_hub', 'hub' => 1, 'targets' => [ 4 ], 'tab' => 'missing' ];
+	MHM_Audit_Admin::handle_post();
+} catch ( MHM_Redirect $redirect ) {
+	// Expected.
+}
+
+is_same( 2, MHM_Model::get_primary_hub( 4, 'geo' ), 'an occupied slot is left alone' );
+ok( str_contains( implode( ' ', queued_notices() ), 'left unchanged' ), 'and said so plainly' );
+
+// Cross-language pairs are never assigned automatically.
+mock_post( 7, [ 'post_title' => 'English post', 'post_name' => 'english-post', 'lang' => 'en' ] );
+try {
+	$_POST = [ 'task' => 'assign_hub', 'hub' => 2, 'targets' => [ 7 ], 'tab' => 'missing' ];
+	MHM_Audit_Admin::handle_post();
+} catch ( MHM_Redirect $redirect ) {
+	// Expected.
+}
+
+is_same( null, MHM_Model::get_primary_hub( 7, 'geo' ), 'a cross-language post is not assigned' );
+ok( str_contains( implode( ' ', queued_notices() ), 'another language' ), 'and the reason is given' );
+
+echo "\nHub traffic\n";
+
+$traffic = render_audit( [ 'tab' => 'traffic' ] );
+ok( str_contains( $traffic, 'has not been run yet' ), 'the traffic report waits to be run' );
+
+$traffic = render_audit( [ 'tab' => 'traffic', 'run' => 1 ] );
+ok( str_contains( $traffic, 'Total owned' ), 'and then reports what each hub owns' );
+ok( str_contains( $traffic, 'Paris en famille' ), 'listing the hubs' );
+
 echo "\nThe relations graph\n";
 
 $empty = render_audit( [ 'tab' => 'relations' ] );

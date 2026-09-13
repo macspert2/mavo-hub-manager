@@ -190,3 +190,14 @@
 .mhm-tip dt { color: #646970; }
 .mhm-tip dd { margin: 0; }
 .mhm-tip-links { margin: 6px 0 0; }
+
+.mhm-bulkbar {
+	align-items: center;
+	background: #f6f7f7;
+	border: 1px solid #dcdcde;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 8px 0 0;
+	padding: 8px 10px;
+}

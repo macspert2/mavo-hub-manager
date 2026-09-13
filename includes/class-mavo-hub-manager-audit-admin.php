@@ -24,6 +24,7 @@ class MHM_Audit_Admin {
 			'candidates' => __( 'Hub candidates', 'mavo-hub-manager' ),
 			'linkback'   => __( 'No link back to hub', 'mavo-hub-manager' ),
 			'relations'  => __( 'Post relations', 'mavo-hub-manager' ),
+			'traffic'    => __( 'Hub traffic', 'mavo-hub-manager' ),
 			'health'     => __( 'Hub health', 'mavo-hub-manager' ),
 			'errors'     => __( 'Relationship errors', 'mavo-hub-manager' ),
 		];
@@ -74,6 +75,11 @@ class MHM_Audit_Admin {
 			self::redirect_back();
 		}
 
+		if ( 'assign_hub' === $task ) {
+			self::task_assign_hub();
+			self::redirect_back();
+		}
+
 		$child = isset( $_POST['child'] ) ? absint( wp_unslash( $_POST['child'] ) ) : 0;
 		$type  = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
 
@@ -105,7 +111,7 @@ class MHM_Audit_Admin {
 	private static function redirect_back(): void {
 		$redirect = [];
 
-		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'run', 'post', 'cousins', 'gmax' ] as $key ) {
+		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'tsort', 'run', 'post', 'cousins', 'gmax' ] as $key ) {
 			if ( isset( $_POST[ $key ] ) && '' !== $_POST[ $key ] ) {
 				$redirect[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
 			}
@@ -150,6 +156,131 @@ class MHM_Audit_Admin {
 		);
 	}
 
+	/**
+	 * Assign the posts ticked on "Posts without a hub" to one chosen hub.
+	 *
+	 * The same rules the scanner works under, for the same reasons:
+	 *
+	 *   * every write goes through MHM_Model::set_primary_hub(), so existence,
+	 *     post type, hub type, self-reference and cycles are all re-validated
+	 *     at write time — a stale form cannot force a bad relationship;
+	 *   * a slot that has filled up since the list was drawn is skipped, never
+	 *     overwritten, because overwriting a primary hub is always an explicit,
+	 *     confirmed act;
+	 *   * a cross-language pair is never assigned automatically.
+	 *
+	 * The hub's own type decides which of the two meta keys is written: a hub
+	 * is exactly one type, so there is nothing else to ask.
+	 */
+	private static function task_assign_hub(): void {
+		$hub_id  = isset( $_POST['hub'] ) ? absint( wp_unslash( $_POST['hub'] ) ) : 0;
+		$targets = isset( $_POST['targets'] ) ? array_map( 'absint', (array) wp_unslash( $_POST['targets'] ) ) : [];
+		$targets = array_values( array_unique( array_filter( $targets ) ) );
+
+		$type = $hub_id ? MHM_Model::get_hub_type( $hub_id ) : null;
+
+		if ( ! $type ) {
+			MHM_Admin::add_notice( 'error', __( 'Choose a hub to assign these posts to.', 'mavo-hub-manager' ) );
+
+			return;
+		}
+
+		if ( ! $targets ) {
+			MHM_Admin::add_notice( 'warning', __( 'No posts were ticked, so nothing was assigned.', 'mavo-hub-manager' ) );
+
+			return;
+		}
+
+		$assigned  = 0;
+		$occupied  = 0;
+		$crossed   = 0;
+		$refused   = 0;
+		$last_error = '';
+
+		foreach ( $targets as $target ) {
+			// The slot may have been filled since this page was drawn.
+			if ( null !== MHM_Model::get_primary_hub( $target, $type ) ) {
+				$occupied++;
+				continue;
+			}
+
+			if ( ! MHM_Model::is_same_language( $target, $hub_id ) ) {
+				$crossed++;
+				continue;
+			}
+
+			$result = MHM_Model::set_primary_hub( $target, $hub_id, $type );
+
+			if ( is_wp_error( $result ) ) {
+				$refused++;
+				$last_error = $result->get_error_message();
+				continue;
+			}
+
+			$assigned++;
+		}
+
+		MHM_Admin::add_notice(
+			$assigned ? 'success' : 'warning',
+			sprintf(
+				/* translators: 1: number of posts, 2: hub type label, 3: hub title */
+				_n(
+					'%1$d post assigned to the %2$s hub "%3$s".',
+					'%1$d posts assigned to the %2$s hub "%3$s".',
+					$assigned,
+					'mavo-hub-manager'
+				),
+				$assigned,
+				MHM_Model::type_label( $type ),
+				get_the_title( $hub_id )
+			)
+		);
+
+		if ( $occupied ) {
+			MHM_Admin::add_notice(
+				'warning',
+				sprintf(
+					/* translators: %d: number of posts */
+					_n(
+						'%d post already had a primary hub of this type and was left unchanged.',
+						'%d posts already had a primary hub of this type and were left unchanged.',
+						$occupied,
+						'mavo-hub-manager'
+					),
+					$occupied
+				)
+			);
+		}
+
+		if ( $crossed ) {
+			MHM_Admin::add_notice(
+				'warning',
+				sprintf(
+					/* translators: %d: number of posts */
+					_n(
+						'%d post is in another language and was not assigned.',
+						'%d posts are in another language and were not assigned.',
+						$crossed,
+						'mavo-hub-manager'
+					),
+					$crossed
+				)
+			);
+		}
+
+		if ( $refused ) {
+			MHM_Admin::add_notice(
+				'error',
+				sprintf(
+					/* translators: 1: number of posts, 2: the model's reason */
+					_n( '%1$d post was refused: %2$s', '%1$d posts were refused: %2$s', $refused, 'mavo-hub-manager' ),
+					$refused,
+					$last_error
+				)
+			);
+		}
+	}
+
 	private static function candidates_key(): string {
 		return 'mhm_candidates_' . get_current_user_id();
 	}
@@ -181,6 +312,9 @@ class MHM_Audit_Admin {
 			'offset'  => isset( $_GET['offset'] ) ? max( 0, absint( wp_unslash( $_GET['offset'] ) ) ) : 0,
 			's'       => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
 			'sort'    => isset( $_GET['sort'] ) && 'views' === $_GET['sort'] ? 'views' : 'date',
+			'tsort'   => isset( $_GET['tsort'] ) && in_array( $_GET['tsort'], [ 'total', 'subtree', 'children', 'per_child' ], true )
+				? sanitize_key( wp_unslash( $_GET['tsort'] ) )
+				: 'total',
 			'post'    => isset( $_GET['post'] ) ? absint( wp_unslash( $_GET['post'] ) ) : 0,
 			'cousins' => ! empty( $_GET['cousins'] ) ? '1' : '',
 			'gmax'    => isset( $_GET['gmax'] ) ? max( 1, min( 40, absint( wp_unslash( $_GET['gmax'] ) ) ) ) : MHM_Audit::GRAPH_SIBLINGS,
@@ -273,6 +407,10 @@ class MHM_Audit_Admin {
 
 			case 'relations':
 				self::render_relations( $context );
+				break;
+
+			case 'traffic':
+				self::render_traffic( $context );
 				break;
 
 			case 'health':
@@ -497,7 +635,10 @@ class MHM_Audit_Admin {
 			return;
 		}
 
+		self::open_assign_form( $context );
+
 		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<td class="manage-column column-cb check-column"><input type="checkbox" data-mhm-check-all aria-label="' . esc_attr__( 'Select all shown', 'mavo-hub-manager' ) . '" /></td>';
 		echo '<th>' . esc_html__( 'ID', 'mavo-hub-manager' ) . '</th>';
 		echo '<th>' . esc_html__( 'Title', 'mavo-hub-manager' ) . '</th>';
 		echo '<th>' . esc_html__( 'Post type', 'mavo-hub-manager' ) . '</th>';
@@ -518,6 +659,11 @@ class MHM_Audit_Admin {
 			$views = MHM_Audit::get_views( (int) $post_id );
 
 			echo '<tr>';
+			printf(
+				'<th scope="row" class="check-column"><input type="checkbox" name="targets[]" value="%1$d" aria-label="%2$s" /></th>',
+				(int) $post_id,
+				esc_attr( sprintf( /* translators: %s: post title */ __( 'Select "%s"', 'mavo-hub-manager' ), get_the_title( (int) $post_id ) ) )
+			);
 			echo '<td>' . (int) $post_id . '</td>';
 			echo '<td>' . MHM_Admin::post_link( (int) $post_id ) . ' ' . MHM_Admin::type_badge( MHM_Model::get_hub_type( (int) $post_id ) ) . '</td>';
 			echo '<td>' . esc_html( $post->post_type ) . '</td>';
@@ -532,11 +678,75 @@ class MHM_Audit_Admin {
 		}
 
 		echo '</tbody></table>';
+		echo '</form>';
 
 		self::render_pagination( $context, (int) $report['paged'], (bool) $report['has_more'] );
 		self::render_cost( $started, $queries );
 
-		echo '<p class="description">' . esc_html__( 'To assign hubs, open the hub in Tools → Hub Manager and use its link scanner or its manual "Add child" search. Assignment is never done from this report.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Assigning here fills an empty slot only: a post that has gained a primary hub since this list was drawn is skipped rather than overwritten, and a hub in another language is never assigned automatically. Moving a post that already has a hub stays an explicit, confirmed act in Tools → Hub Manager.', 'mavo-hub-manager' ) . '</p>';
+		echo '</div>';
+	}
+
+	/**
+	 * The bulk-assign bar, and the form the table's checkboxes live in.
+	 *
+	 * Hubs are offered from the same language as the list when a language
+	 * filter is on, which keeps the usual case cross-language-free by
+	 * construction rather than by catching it at write time.
+	 */
+	private static function open_assign_form( array $context ): void {
+		$hubs = MHM_Model::get_hubs(
+			[
+				'type' => in_array( $context['mode'], MHM_Model::types(), true ) ? $context['mode'] : '',
+				'lang' => $context['lang'],
+			]
+		);
+
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		wp_nonce_field( self::ACTION );
+		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '" />';
+		echo '<input type="hidden" name="task" value="assign_hub" />';
+
+		foreach ( $context as $key => $value ) {
+			if ( '' === $value || null === $value ) {
+				continue;
+			}
+			printf( '<input type="hidden" name="%s" value="%s" />', esc_attr( (string) $key ), esc_attr( (string) $value ) );
+		}
+
+		if ( ! $hubs ) {
+			echo '<p class="description">' . esc_html__( 'No hub of this kind exists yet in this language, so there is nothing to assign to.', 'mavo-hub-manager' ) . '</p>';
+
+			return;
+		}
+
+		echo '<div class="mhm-bulkbar">';
+		echo '<label class="mhm-field">' . esc_html__( 'Assign the ticked posts to:', 'mavo-hub-manager' ) . ' ';
+		echo '<select name="hub">';
+		printf( '<option value="">%s</option>', esc_html__( 'Choose a hub…', 'mavo-hub-manager' ) );
+
+		foreach ( $hubs as $hub_id ) {
+			$hub_id = (int) $hub_id;
+			$type   = MHM_Model::get_hub_type( $hub_id );
+			$lang   = MHM_Model::get_language( $hub_id );
+
+			printf(
+				'<option value="%d">%s</option>',
+				$hub_id,
+				esc_html(
+					sprintf(
+						'%1$s (#%2$d) — %3$s%4$s',
+						get_the_title( $hub_id ),
+						$hub_id,
+						MHM_Model::type_label( (string) $type ),
+						$lang ? ' · ' . $lang : ''
+					)
+				)
+			);
+		}
+
+		echo '</select></label> ';
+		echo '<button type="submit" class="button button-primary">' . esc_html__( 'Assign selected posts', 'mavo-hub-manager' ) . '</button>';
 		echo '</div>';
 	}
 
@@ -1102,7 +1312,131 @@ class MHM_Audit_Admin {
 		echo '</ul>';
 	}
 
-	/* ------------------------------------------------------- 5. hub health */
+	/* ------------------------------------------------------ 5. hub traffic */
+
+	/**
+	 * What each hub's part of the site is actually read.
+	 *
+	 * The number that matters editorially is not a hub's own page views but
+	 * the traffic of everything it owns — so a country hub counts its cities
+	 * and their articles, through the same inferred hierarchy as everywhere
+	 * else. Nothing here is stored or cached in post meta.
+	 */
+	private static function render_traffic( array $context ): void {
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Hub traffic', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html(
+			sprintf(
+				/* translators: %s: views meta key */
+				__( 'Views of each hub and of everything below it in its own hierarchy, at any depth, read from the "%s" meta key. A post with no counter contributes nothing rather than being left out.', 'mavo-hub-manager' ),
+				MHM_Audit::views_meta_key()
+			)
+		) . '</p>';
+
+		self::open_filters( $context );
+		self::select(
+			'htype',
+			[
+				''      => __( 'All hub types', 'mavo-hub-manager' ),
+				'geo'   => __( 'Geographic', 'mavo-hub-manager' ),
+				'theme' => __( 'Thematic', 'mavo-hub-manager' ),
+			],
+			$context['htype'],
+			__( 'Hub type', 'mavo-hub-manager' )
+		);
+		self::language_select( $context );
+		self::select(
+			'tsort',
+			[
+				'total'     => __( 'Most traffic owned', 'mavo-hub-manager' ),
+				'subtree'   => __( 'Most traffic below the hub', 'mavo-hub-manager' ),
+				'children'  => __( 'Most posts owned', 'mavo-hub-manager' ),
+				'per_child' => __( 'Highest views per post owned', 'mavo-hub-manager' ),
+			],
+			$context['tsort'],
+			__( 'Sort', 'mavo-hub-manager' )
+		);
+		printf(
+			'<input type="search" name="s" value="%s" placeholder="%s" /> ',
+			esc_attr( $context['s'] ),
+			esc_attr__( 'Filter hubs…', 'mavo-hub-manager' )
+		);
+		self::close_filters( $context );
+
+		if ( ! self::should_run( $context ) ) {
+			self::render_not_run( __( 'One run reads every hub relationship and every view counter, in a handful of queries.', 'mavo-hub-manager' ) );
+
+			return;
+		}
+
+		$started = microtime( true );
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
+
+		$report = MHM_Audit::hub_traffic(
+			[
+				'type'   => $context['htype'],
+				'lang'   => $context['lang'],
+				'search' => $context['s'],
+				'sort'   => $context['tsort'],
+			]
+		);
+
+		$summary = $report['summary'];
+
+		echo '<ul class="mhm-summary">';
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Hubs', 'mavo-hub-manager' ), (int) $summary['hubs'] );
+		printf( '<li>%s <span class="mhm-count">%s</span></li>', esc_html__( 'Posts owned', 'mavo-hub-manager' ), esc_html( number_format_i18n( (int) $summary['posts'] ) ) );
+		printf( '<li>%s <span class="mhm-count">%s</span></li>', esc_html__( 'Views owned', 'mavo-hub-manager' ), esc_html( number_format_i18n( (int) $summary['views'] ) ) );
+		printf( '<li>%s <span class="mhm-count">%d</span></li>', esc_html__( 'Hubs with no traffic at all', 'mavo-hub-manager' ), (int) $summary['without_views'] );
+		echo '</ul>';
+		echo '<p class="description">' . esc_html__( 'A post owned by two hubs of different types is counted under each of them, so the totals overlap by design and are not a site total.', 'mavo-hub-manager' ) . '</p>';
+
+		if ( ! $report['rows'] ) {
+			echo '<p class="mhm-muted">' . esc_html__( 'No hub matches these filters.', 'mavo-hub-manager' ) . '</p>';
+			self::render_cost( $started, $queries );
+			echo '</div>';
+
+			return;
+		}
+
+		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<th>' . esc_html__( 'Hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Hub type', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Direct children', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Posts owned', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Hub views', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Views below', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Total owned', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Per post', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Actions', 'mavo-hub-manager' ) . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach ( $report['rows'] as $row ) {
+			$hub_id = (int) $row['hub'];
+
+			echo '<tr>';
+			echo '<td>' . MHM_Admin::post_link( $hub_id ) . '</td>';
+			echo '<td>' . MHM_Admin::type_badge( (string) $row['type'] ) . '</td>';
+			echo '<td>' . MHM_Admin::lang_cell( $hub_id ) . '</td>';
+			echo '<td class="mhm-col-num">' . (int) $row['direct'] . '</td>';
+			echo '<td class="mhm-col-num">' . esc_html( number_format_i18n( (int) $row['posts'] ) ) . '</td>';
+			echo '<td class="mhm-col-num">' . esc_html( number_format_i18n( (int) $row['own'] ) ) . '</td>';
+			echo '<td class="mhm-col-num">' . esc_html( number_format_i18n( (int) $row['subtree'] ) ) . '</td>';
+			echo '<td class="mhm-col-num"><strong>' . esc_html( number_format_i18n( (int) $row['total'] ) ) . '</strong></td>';
+			echo '<td class="mhm-col-num">' . esc_html( number_format_i18n( (int) $row['per_child'] ) ) . '</td>';
+			echo '<td><a class="button button-small" href="' . esc_url( MHM_Admin::page_url( [ 'hub' => $hub_id ] ) ) . '">' . esc_html__( 'Manage', 'mavo-hub-manager' ) . '</a> ';
+			echo '<a class="button button-small" href="' . esc_url( self::page_url( [ 'tab' => 'relations', 'post' => $hub_id ] ) ) . '">' . esc_html__( 'Relations', 'mavo-hub-manager' ) . '</a></td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table>';
+
+		self::render_cost( $started, $queries );
+		echo '</div>';
+	}
+
+	/* ------------------------------------------------------- 6. hub health */
 
 	private static function render_health( array $context ): void {
 		echo '<div class="mhm-panel">';
@@ -1231,7 +1565,7 @@ class MHM_Audit_Admin {
 		echo '</div>';
 	}
 
-	/* ---------------------------------------------- 6. relationship errors */
+	/* ---------------------------------------------- 7. relationship errors */
 
 	private static function render_errors( array $context ): void {
 		$run = '1' === $context['run'];
