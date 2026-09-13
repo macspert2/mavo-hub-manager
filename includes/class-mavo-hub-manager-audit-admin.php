@@ -141,10 +141,9 @@ class MHM_Audit_Admin {
 		MHM_Admin::add_notice(
 			'success',
 			sprintf(
-				/* translators: 1: posts scanned so far, 2: posts to scan, 3: candidates found */
-				__( 'Scanned %1$d of %2$d posts and pages; %3$d link somewhere internally.', 'mavo-hub-manager' ),
+				/* translators: 1: posts scanned so far, 2: candidates found */
+				__( 'Scanned %1$d posts and pages so far; %2$d of them link somewhere internally.', 'mavo-hub-manager' ),
 				(int) $state['scanned'],
-				(int) $state['total'],
 				count( (array) $state['counts'] )
 			)
 		);
@@ -185,6 +184,22 @@ class MHM_Audit_Admin {
 		];
 	}
 
+	/* ------------------------------------------------------------- debugging */
+
+	/** SQL run by the report on screen, collected only when WP_DEBUG is on. */
+	private static array $captured_sql = [];
+
+	private static function debugging(): bool {
+		return defined( 'WP_DEBUG' ) && WP_DEBUG;
+	}
+
+	/** Keep the queries each report makes, so a slow one can be read directly. */
+	public static function capture_sql( $sql ) {
+		self::$captured_sql[] = (string) $sql;
+
+		return $sql;
+	}
+
 	/** Every Polylang language on the site, or [] without Polylang. */
 	private static function languages(): array {
 		if ( ! function_exists( 'pll_languages_list' ) ) {
@@ -215,6 +230,10 @@ class MHM_Audit_Admin {
 		}
 
 		$context = self::context();
+
+		if ( self::debugging() ) {
+			add_filter( 'posts_request', [ __CLASS__, 'capture_sql' ], 999 );
+		}
 
 		echo '<div class="wrap mhm-wrap">';
 		echo '<h1>' . esc_html__( 'Hub Audit', 'mavo-hub-manager' ) . '</h1>';
@@ -270,6 +289,9 @@ class MHM_Audit_Admin {
 		echo '<form method="get" class="mhm-filters">';
 		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
 		echo '<input type="hidden" name="tab" value="' . esc_attr( $context['tab'] ) . '" />';
+		// Submitting the filters is what runs the report: opening a tab must
+		// never query, or one slow report takes the whole page down with it.
+		echo '<input type="hidden" name="run" value="1" />';
 	}
 
 	private static function select( string $name, array $options, string $current, string $label ): void {
@@ -315,6 +337,27 @@ class MHM_Audit_Admin {
 		);
 	}
 
+	/**
+	 * Has this tab been asked to run?
+	 *
+	 * Nothing queries until it has. Reports here scan the whole site, and a
+	 * report that runs on page load can only fail by taking the page with it.
+	 */
+	private static function should_run( array $context ): bool {
+		return '1' === $context['run'];
+	}
+
+	/** The placeholder a tab shows before it has been run. */
+	private static function render_not_run( string $hint = '' ): void {
+		echo '<p>' . esc_html__( 'This report has not been run yet. Choose your filters and click "Run report" — nothing is queried until you do.', 'mavo-hub-manager' ) . '</p>';
+
+		if ( '' !== $hint ) {
+			echo '<p class="description">' . esc_html( $hint ) . '</p>';
+		}
+
+		echo '</div>';
+	}
+
 	/** What the report on screen actually cost, so a slow one is visible. */
 	private static function render_cost( float $started, int $queries_before ): void {
 		$ms = ( microtime( true ) - $started ) * 1000;
@@ -332,6 +375,20 @@ class MHM_Audit_Admin {
 				)
 			)
 		);
+
+		// With WP_DEBUG on, the queries themselves — so a report that is slow
+		// here can be run by hand rather than guessed at.
+		if ( self::debugging() && self::$captured_sql ) {
+			echo '<details class="mhm-sql"><summary>' . esc_html__( 'Queries this report ran', 'mavo-hub-manager' ) . '</summary>';
+
+			foreach ( self::$captured_sql as $sql ) {
+				echo '<pre>' . esc_html( $sql ) . '</pre>';
+			}
+
+			echo '</details>';
+
+			self::$captured_sql = [];
+		}
 	}
 
 	private static function post_type_select( array $context ): void {
@@ -347,8 +404,11 @@ class MHM_Audit_Admin {
 		);
 	}
 
-	private static function close_filters( array $context ): void {
-		echo '<button type="submit" class="button">' . esc_html__( 'Apply', 'mavo-hub-manager' ) . '</button> ';
+	private static function close_filters( array $context, string $label = '' ): void {
+		printf(
+			'<button type="submit" class="button button-primary">%s</button> ',
+			esc_html( '' !== $label ? $label : __( 'Run report', 'mavo-hub-manager' ) )
+		);
 		echo '<a class="button-link" href="' . esc_url( self::page_url( [ 'tab' => $context['tab'] ] ) ) . '">' . esc_html__( 'Reset', 'mavo-hub-manager' ) . '</a>';
 		echo '</form>';
 	}
@@ -387,6 +447,12 @@ class MHM_Audit_Admin {
 			esc_attr__( 'Search titles…', 'mavo-hub-manager' )
 		);
 		self::close_filters( $context );
+
+		if ( ! self::should_run( $context ) ) {
+			self::render_not_run( __( '"Most viewed first" sorts by a meta value, which is the slower of the two orders on a site with a large postmeta table. "Newest first" needs no such sort.', 'mavo-hub-manager' ) );
+
+			return;
+		}
 
 		$started = microtime( true );
 		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
@@ -509,7 +575,7 @@ class MHM_Audit_Admin {
 		self::language_select( $context );
 		self::post_type_select( $context );
 		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
-		self::close_filters( $context );
+		self::close_filters( $context, __( 'Apply filters', 'mavo-hub-manager' ) );
 
 		$signature = MHM_Audit::candidates_signature(
 			[
@@ -588,7 +654,6 @@ class MHM_Audit_Admin {
 	/** Scan progress and the two buttons that drive it. */
 	private static function render_candidates_controls( array $context, array $state ): void {
 		$scanned = (int) ( $state['scanned'] ?? 0 );
-		$total   = (int) ( $state['total'] ?? 0 );
 		$found   = isset( $state['counts'] ) ? count( (array) $state['counts'] ) : 0;
 		$done    = ! empty( $state['done'] );
 
@@ -597,10 +662,9 @@ class MHM_Audit_Admin {
 				'<p><strong>%s</strong> %s</p>',
 				esc_html(
 					sprintf(
-						/* translators: 1: posts scanned, 2: posts to scan */
-						__( 'Scanned %1$d of %2$d posts and pages.', 'mavo-hub-manager' ),
-						$scanned,
-						$total
+						/* translators: %d: posts scanned so far */
+						__( 'Scanned %d posts and pages so far.', 'mavo-hub-manager' ),
+						$scanned
 					)
 				),
 				esc_html(
@@ -716,6 +780,12 @@ class MHM_Audit_Admin {
 		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
 		self::sort_select( $context );
 		self::close_filters( $context );
+
+		if ( ! self::should_run( $context ) ) {
+			self::render_not_run( __( 'One run reads the content of one batch of assigned children.', 'mavo-hub-manager' ) );
+
+			return;
+		}
 
 		$started = microtime( true );
 		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
@@ -892,6 +962,12 @@ class MHM_Audit_Admin {
 			esc_html__( 'Include link analysis — reads and resolves the links in every hub, so it is slow on many hubs', 'mavo-hub-manager' )
 		);
 		self::close_filters( $context );
+
+		if ( ! self::should_run( $context ) ) {
+			self::render_not_run( __( 'This one reads every hub, and with link analysis on it reads every hub\'s content too.', 'mavo-hub-manager' ) );
+
+			return;
+		}
 
 		$started = microtime( true );
 		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;

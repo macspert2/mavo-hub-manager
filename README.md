@@ -120,7 +120,7 @@ children once the page is actually marked.
 Reading content is the expensive part, so the scan is explicit and incremental:
 
 ```
-Scanned 450 of 3,120 posts and pages.
+Scanned 450 posts and pages so far.
 312 candidates so far — the ranking covers what has been scanned, not yet the whole site.
 [ Scan next 150 ]  [ Start over ]
 ```
@@ -135,9 +135,14 @@ new scan, and the scan is a POST so reloading the page never re-runs it.
 
 *Posts without a hub* and *No link back* offer two orders:
 
+* **Newest first** (the default) — no meta join at all, so the `LIMIT` does the work.
+  It is also the only way to see posts that have no view counter yet.
 * **Most viewed first** — joins the `views` post meta descending, so the pages that
-  actually matter come first. It can only list posts that *have* a counter.
-* **Newest first** — no join at all, and therefore the way to see posts with no counter.
+  actually matter come first. It can only list posts that *have* a counter, and sorting by
+  a meta value means sorting the whole matching set before the `LIMIT` helps. On this site
+  that is the expensive order: the theme strips WordPress's own custom-fields metabox for
+  precisely that reason ("very slow query meta_key sort query … on sites with large
+  postmeta tables").
 
 Change the key with:
 
@@ -147,14 +152,23 @@ add_filter( 'mavo_hub_manager_views_meta_key', fn() => 'my_view_counter' );
 
 ### Keeping the reports cheap
 
-These reports run over the whole site, so they follow three rules, and every tab prints
-what it actually cost (`Report built in 34 ms and 6 database queries`):
+**No tab queries anything until you click "Run report".** Opening the Hub Audit page — or
+switching tabs — builds filter forms and nothing else. A report that runs on page load can
+only fail by taking the whole page down with it, which is exactly what happened once.
+
+Beyond that, these reports run over the whole site, so they follow four rules, and every
+tab prints what it actually cost (`Report built in 34 ms and 6 database queries`). With
+`WP_DEBUG` on, each report also prints the SQL it ran, so a slow one can be read and run by
+hand instead of guessed at:
 
 * **Meta conditions are AND'ed `EXISTS` / `NOT EXISTS` only.** An `OR` group over
   `postmeta` makes WordPress emit one `LEFT JOIN` per branch and then join them against
   each other; a few of those are enough to hang the request.
 * **No `SQL_CALC_FOUND_ROWS`.** Counting every matching row across the site is the part
   that does not scale, so the lists page with prev/next links and no grand total.
+* **Nothing is counted up front.** Counting posts that *lack* a meta value means an
+  anti-join over the whole table, so the candidate scan reports "scanned 450 so far"
+  rather than "450 of 3,120", and the end of the scan is simply the first short batch.
 * **The link-back check never resolves a URL to an ID.** `url_to_postid()` runs the
   rewrite rules plus a query *per link*; instead every href, and every hub, is reduced to
   comparable keys (`path:/paris-en-famille/`, `slug:paris-en-famille`, `id:1234`) and the

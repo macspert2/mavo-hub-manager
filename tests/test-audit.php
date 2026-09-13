@@ -387,7 +387,6 @@ is_same( 0, MHM_Audit::count_internal_links( 42 ), 'a post with no internal link
 
 $state = MHM_Audit::scan_candidates( [ 'status' => 'any' ] );
 
-is_same( 4, $state['total'], 'the hub is left out of the job size' );
 is_same( 4, $state['scanned'], 'a batch larger than the site scans everything' );
 is_same( true, $state['done'], 'and reports the scan as complete' );
 is_same( false, isset( $state['counts'][44] ), 'a page already marked as a hub is never a candidate' );
@@ -409,8 +408,16 @@ is_same( false, $first['done'], 'and knows there is more to read' );
 
 $second = MHM_Audit::scan_candidates( [ 'status' => 'any', 'batch' => 2 ], $first );
 is_same( 4, $second['scanned'], 'the second pass continues where the first stopped' );
-is_same( true, $second['done'], 'and finishes the job' );
 is_same( [ 40 => 3, 41 => 1 ], $second['counts'], 'the tally accumulates across passes' );
+
+// A full batch cannot know it was the last one: the end is a short batch. The
+// job is never counted up front, because counting posts that lack a meta value
+// means an anti-join over the whole table.
+is_same( false, $second['done'], 'a full batch does not claim to be the end' );
+
+$third = MHM_Audit::scan_candidates( [ 'status' => 'any', 'batch' => 2 ], $second );
+is_same( true, $third['done'], 'the first short batch ends the scan' );
+is_same( [ 40 => 3, 41 => 1 ], $third['counts'], 'and changes nothing about the tally' );
 
 // Changing a filter must start a new scan rather than mix two of them.
 $switched = MHM_Audit::scan_candidates( [ 'status' => 'draft', 'batch' => 2 ], $second );

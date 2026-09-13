@@ -51,6 +51,7 @@ function wp_safe_redirect( $location, $status = 302 ) {
 }
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
+function remove_filter( ...$args ) {}
 function add_management_page( ...$args ) {}
 
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-admin.php';

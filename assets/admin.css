@@ -105,3 +105,14 @@
 	overflow-wrap: anywhere;
 	user-select: all;
 }
+
+.mhm-sql { margin: 8px 0; }
+.mhm-sql summary { cursor: pointer; }
+.mhm-sql pre {
+	background: #f6f7f7;
+	border: 1px solid #dcdcde;
+	overflow-x: auto;
+	padding: 8px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}

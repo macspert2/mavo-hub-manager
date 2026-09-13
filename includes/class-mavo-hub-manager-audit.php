@@ -475,6 +475,9 @@ class MHM_Audit {
 	 */
 	private static function order_args( string $sort ): array {
 		if ( 'views' === $sort ) {
+			// Ordering by a meta value sorts the whole matching set before the
+			// LIMIT can help. On a large postmeta table that is the expensive
+			// choice, which is why 'date' is the default.
 			return [
 				'clause'  => [ 'key' => self::views_meta_key(), 'compare' => 'EXISTS', 'type' => 'NUMERIC' ],
 				'orderby' => [ 'mhm_views' => 'DESC' ],
@@ -513,7 +516,7 @@ class MHM_Audit {
 		$mode = isset( $args['mode'] ) && in_array( $args['mode'], [ 'geo', 'theme', 'both' ], true )
 			? (string) $args['mode']
 			: 'geo';
-		$sort = isset( $args['sort'] ) && 'date' === $args['sort'] ? 'date' : 'views';
+		$sort = isset( $args['sort'] ) && 'views' === $args['sort'] ? 'views' : 'date';
 
 		$per_page = isset( $args['per_page'] ) ? max( 1, min( 200, absint( $args['per_page'] ) ) ) : self::DEFAULT_PER_PAGE;
 		$paged    = isset( $args['paged'] ) ? max( 1, absint( $args['paged'] ) ) : 1;
@@ -627,7 +630,6 @@ class MHM_Audit {
 			'signature' => $signature,
 			'cursor'    => 0,
 			'scanned'   => 0,
-			'total'     => 0,
 			'counts'    => [],
 			'done'      => false,
 		];
@@ -682,15 +684,6 @@ class MHM_Audit {
 			]
 		);
 
-		// The size of the job, counted once when the scan starts.
-		if ( 0 === (int) $state['cursor'] ) {
-			$counter = new WP_Query(
-				array_merge( $query_args, [ 'posts_per_page' => 1, 'offset' => 0, 'no_found_rows' => false ] )
-			);
-
-			$state['total'] = (int) ( $counter->found_posts ?? 0 );
-		}
-
 		$ids = array_map( 'absint', (array) ( new WP_Query( $query_args ) )->posts );
 
 		self::prime( $ids );
@@ -710,9 +703,10 @@ class MHM_Audit {
 		$state['cursor']  = (int) $state['cursor'] + count( $ids );
 		$state['scanned'] = (int) $state['scanned'] + count( $ids );
 
-		// A short batch means the end; so does reaching the size counted when
-		// the scan started, which spares the editor one empty pass.
-		$state['done'] = count( $ids ) < $batch || $state['cursor'] >= (int) $state['total'];
+		// A short batch means the end. The job is deliberately not counted
+		// first: counting posts that lack a meta value means an anti-join over
+		// the whole table, which is the kind of query this site cannot afford.
+		$state['done'] = count( $ids ) < $batch;
 
 		arsort( $state['counts'], SORT_NUMERIC );
 
@@ -783,7 +777,7 @@ class MHM_Audit {
 	 */
 	public static function no_link_back( array $args = [] ): array {
 		$type = isset( $args['type'] ) && MHM_Model::is_valid_type( (string) $args['type'] ) ? (string) $args['type'] : 'geo';
-		$sort = isset( $args['sort'] ) && 'date' === $args['sort'] ? 'date' : 'views';
+		$sort = isset( $args['sort'] ) && 'views' === $args['sort'] ? 'views' : 'date';
 
 		$batch  = isset( $args['batch'] ) ? max( 1, min( 500, absint( $args['batch'] ) ) ) : self::DEFAULT_BATCH;
 		$offset = isset( $args['offset'] ) ? max( 0, absint( $args['offset'] ) ) : 0;

@@ -42,7 +42,11 @@ echo "Tabs\n";
 
 $before = $GLOBALS['MOCK_META'];
 
-$missing = render_audit( [ 'tab' => 'missing' ] );
+$unrun = render_audit( [ 'tab' => 'missing' ] );
+ok( str_contains( $unrun, 'has not been run yet' ), 'a tab queries nothing until it is run' );
+ok( ! str_contains( $unrun, 'Views' ), 'so no table is built on page load' );
+
+$missing = render_audit( [ 'tab' => 'missing', 'run' => 1, 'sort' => 'views' ] );
 ok( str_contains( $missing, 'Posts without a hub' ), 'the missing-hub tab renders' );
 ok( str_contains( $missing, 'Views' ), 'it shows the view counter column' );
 ok( str_contains( $missing, 'nav-tab-active' ), 'the active tab is marked' );
@@ -52,7 +56,7 @@ ok( str_contains( $candidates, 'Hub candidates' ), 'the candidates tab renders' 
 ok( str_contains( $candidates, 'Nothing scanned yet' ), 'and scans nothing until asked' );
 ok( ! str_contains( $candidates, 'Internal links' ), 'so there is no leaderboard yet' );
 
-$linkback = render_audit( [ 'tab' => 'linkback' ] );
+$linkback = render_audit( [ 'tab' => 'linkback', 'run' => 1 ] );
 ok( str_contains( $linkback, 'no link back to their hub' ), 'the link-back tab renders' );
 ok( str_contains( $linkback, 'Le Louvre' ), 'a child that never links back is listed' );
 ok(
@@ -60,7 +64,7 @@ ok(
 	'the suggested shortcode names the hub type, so it follows the stored relationship'
 );
 
-$health = render_audit( [ 'tab' => 'health' ] );
+$health = render_audit( [ 'tab' => 'health', 'run' => 1 ] );
 ok( str_contains( $health, 'Hub health' ), 'the health tab renders' );
 ok( str_contains( $health, 'top-level' ), 'a hub with no parent is marked top-level' );
 
