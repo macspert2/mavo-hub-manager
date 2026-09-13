@@ -170,9 +170,65 @@
 		} );
 	}
 
+	/**
+	 * Hover cards for the relations graph.
+	 *
+	 * The card's contents are already on the page — one div per node, hidden,
+	 * referenced by aria-describedby — so the information is reachable without
+	 * this script. All it adds is showing that markup next to the node.
+	 */
+	function wireGraphTips() {
+		var graph = document.querySelector( '.mhm-graph' );
+		if ( ! graph ) { return; }
+
+		var tip = el( 'div', 'mhm-tip' );
+		tip.hidden = true;
+		document.body.appendChild( tip );
+
+		function hide() { tip.hidden = true; }
+
+		function show( node ) {
+			var source = document.getElementById( node.getAttribute( 'data-mhm-tip' ) || '' );
+			if ( ! source ) { return; }
+
+			tip.innerHTML = source.innerHTML;
+			tip.hidden = false;
+
+			// Placed below the node, nudged back inside the viewport if the
+			// node sits near an edge.
+			var box = node.getBoundingClientRect();
+			var card = tip.getBoundingClientRect();
+			var left = box.left + window.scrollX + ( box.width / 2 ) - ( card.width / 2 );
+			var top = box.bottom + window.scrollY + 8;
+
+			left = Math.max( 8, Math.min( left, window.scrollX + document.documentElement.clientWidth - card.width - 8 ) );
+
+			if ( box.bottom + card.height + 16 > window.innerHeight ) {
+				top = box.top + window.scrollY - card.height - 8;
+			}
+
+			tip.style.left = Math.round( left ) + 'px';
+			tip.style.top = Math.round( top ) + 'px';
+		}
+
+		graph.querySelectorAll( '[data-mhm-node]' ).forEach( function ( node ) {
+			node.addEventListener( 'mouseenter', function () { show( node ); } );
+			node.addEventListener( 'mouseleave', hide );
+			node.addEventListener( 'focus', function () { show( node ); } );
+			node.addEventListener( 'blur', hide );
+		} );
+
+		document.addEventListener( 'keydown', function ( event ) {
+			if ( 'Escape' === event.key ) { hide(); }
+		} );
+
+		window.addEventListener( 'scroll', hide, { passive: true } );
+	}
+
 	document.addEventListener( 'DOMContentLoaded', function () {
 		document.querySelectorAll( '[data-mhm-search]' ).forEach( wireSearch );
 		wireConfirmations();
 		wireCheckAll();
+		wireGraphTips();
 	} );
 }() );

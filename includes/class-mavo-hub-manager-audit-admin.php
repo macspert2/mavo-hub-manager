@@ -23,6 +23,7 @@ class MHM_Audit_Admin {
 			'missing'    => __( 'Posts without a hub', 'mavo-hub-manager' ),
 			'candidates' => __( 'Hub candidates', 'mavo-hub-manager' ),
 			'linkback'   => __( 'No link back to hub', 'mavo-hub-manager' ),
+			'relations'  => __( 'Post relations', 'mavo-hub-manager' ),
 			'health'     => __( 'Hub health', 'mavo-hub-manager' ),
 			'errors'     => __( 'Relationship errors', 'mavo-hub-manager' ),
 		];
@@ -104,7 +105,7 @@ class MHM_Audit_Admin {
 	private static function redirect_back(): void {
 		$redirect = [];
 
-		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'run' ] as $key ) {
+		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'run', 'post', 'cousins', 'gmax' ] as $key ) {
 			if ( isset( $_POST[ $key ] ) && '' !== $_POST[ $key ] ) {
 				$redirect[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
 			}
@@ -168,19 +169,22 @@ class MHM_Audit_Admin {
 		$tab  = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'missing';
 
 		return [
-			'tab'    => isset( $tabs[ $tab ] ) ? $tab : 'missing',
-			'mode'   => isset( $_GET['mode'] ) ? sanitize_key( wp_unslash( $_GET['mode'] ) ) : 'geo',
-			'ltype'  => isset( $_GET['ltype'] ) && 'theme' === $_GET['ltype'] ? 'theme' : 'geo',
-			'htype'  => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
-			'lang'   => isset( $_GET['lang'] ) ? sanitize_key( wp_unslash( $_GET['lang'] ) ) : '',
-			'ptype'  => isset( $_GET['ptype'] ) ? sanitize_key( wp_unslash( $_GET['ptype'] ) ) : 'any',
-			'status' => isset( $_GET['status'] ) ? sanitize_key( wp_unslash( $_GET['status'] ) ) : 'publish',
-			'stale'  => ! empty( $_GET['stale'] ) ? '1' : '',
-			'paged'  => isset( $_GET['paged'] ) ? max( 1, absint( wp_unslash( $_GET['paged'] ) ) ) : 1,
-			'offset' => isset( $_GET['offset'] ) ? max( 0, absint( wp_unslash( $_GET['offset'] ) ) ) : 0,
-			's'      => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
-			'sort'   => isset( $_GET['sort'] ) && 'date' === $_GET['sort'] ? 'date' : 'views',
-			'run'    => ! empty( $_GET['run'] ) ? '1' : '',
+			'tab'     => isset( $tabs[ $tab ] ) ? $tab : 'missing',
+			'mode'    => isset( $_GET['mode'] ) ? sanitize_key( wp_unslash( $_GET['mode'] ) ) : 'geo',
+			'ltype'   => isset( $_GET['ltype'] ) && 'theme' === $_GET['ltype'] ? 'theme' : 'geo',
+			'htype'   => isset( $_GET['htype'] ) ? sanitize_key( wp_unslash( $_GET['htype'] ) ) : '',
+			'lang'    => isset( $_GET['lang'] ) ? sanitize_key( wp_unslash( $_GET['lang'] ) ) : '',
+			'ptype'   => isset( $_GET['ptype'] ) ? sanitize_key( wp_unslash( $_GET['ptype'] ) ) : 'any',
+			'status'  => isset( $_GET['status'] ) ? sanitize_key( wp_unslash( $_GET['status'] ) ) : 'publish',
+			'stale'   => ! empty( $_GET['stale'] ) ? '1' : '',
+			'paged'   => isset( $_GET['paged'] ) ? max( 1, absint( wp_unslash( $_GET['paged'] ) ) ) : 1,
+			'offset'  => isset( $_GET['offset'] ) ? max( 0, absint( wp_unslash( $_GET['offset'] ) ) ) : 0,
+			's'       => isset( $_GET['s'] ) ? sanitize_text_field( wp_unslash( $_GET['s'] ) ) : '',
+			'sort'    => isset( $_GET['sort'] ) && 'views' === $_GET['sort'] ? 'views' : 'date',
+			'post'    => isset( $_GET['post'] ) ? absint( wp_unslash( $_GET['post'] ) ) : 0,
+			'cousins' => ! empty( $_GET['cousins'] ) ? '1' : '',
+			'gmax'    => isset( $_GET['gmax'] ) ? max( 1, min( 40, absint( wp_unslash( $_GET['gmax'] ) ) ) ) : MHM_Audit::GRAPH_SIBLINGS,
+			'run'     => ! empty( $_GET['run'] ) ? '1' : '',
 		];
 	}
 
@@ -265,6 +269,10 @@ class MHM_Audit_Admin {
 
 			case 'linkback':
 				self::render_linkback( $context );
+				break;
+
+			case 'relations':
+				self::render_relations( $context );
 				break;
 
 			case 'health':
@@ -932,7 +940,169 @@ class MHM_Audit_Admin {
 		echo '</p>';
 	}
 
-	/* ------------------------------------------------------- 4. hub health */
+	/* --------------------------------------------------- 4. post relations */
+
+	/**
+	 * One post's place in the hub model, drawn.
+	 *
+	 * Scoped to a single post, so unlike the other reports it runs as soon as
+	 * one is chosen — about a dozen small queries, and none of them site-wide.
+	 */
+	private static function render_relations( array $context ): void {
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Post relations', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'One post, its primary hubs, what sits above those hubs, and the other children of each — the geographic side on the left, the thematic side on the right. Nodes carry a title only; hover or focus one for the rest, and click it to centre the graph there.', 'mavo-hub-manager' ) . '</p>';
+
+		self::render_relations_picker( $context );
+
+		$post_id = (int) $context['post'];
+
+		if ( ! $post_id ) {
+			echo '<p>' . esc_html__( 'Search for a post or page above to draw its relations.', 'mavo-hub-manager' ) . '</p></div>';
+
+			return;
+		}
+
+		$started = microtime( true );
+		$queries = function_exists( 'get_num_queries' ) ? get_num_queries() : 0;
+
+		$graph = MHM_Audit::relation_graph(
+			$post_id,
+			[
+				'cousins' => '1' === $context['cousins'],
+				'max'     => (int) $context['gmax'],
+			]
+		);
+
+		if ( is_wp_error( $graph ) ) {
+			echo '<div class="notice notice-error inline"><p>' . esc_html( $graph->get_error_message() ) . '</p></div></div>';
+
+			return;
+		}
+
+		self::render_relations_header( $graph, $context );
+		self::render_relations_options( $context );
+		self::render_legend();
+
+		MHM_Graph::render(
+			$graph,
+			static function ( int $id ) use ( $context ): string {
+				return self::page_url( array_merge( $context, [ 'tab' => 'relations', 'post' => $id ] ) );
+			}
+		);
+
+		self::render_cost( $started, $queries );
+
+		echo '</div>';
+	}
+
+	/** The search box, wired to the same admin-ajax endpoint the manager uses. */
+	private static function render_relations_picker( array $context ): void {
+		echo '<div class="mhm-search" data-mhm-search="mark">';
+		echo '<input type="search" class="regular-text" data-mhm-input placeholder="' . esc_attr__( 'Title or exact ID…', 'mavo-hub-manager' ) . '" />';
+		echo '<div class="mhm-search-results" data-mhm-results aria-live="polite"></div>';
+		echo '</div>';
+
+		// The search widget fills this form in and reveals it; submitting is a
+		// plain GET, so the graph is a bookmarkable URL.
+		echo '<form method="get" class="mhm-filters" data-mhm-mark-form hidden>';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
+		echo '<input type="hidden" name="tab" value="relations" />';
+		echo '<input type="hidden" name="post" value="" data-mhm-mark-id />';
+
+		foreach ( [ 'cousins', 'gmax' ] as $key ) {
+			if ( ! empty( $context[ $key ] ) ) {
+				printf( '<input type="hidden" name="%s" value="%s" />', esc_attr( $key ), esc_attr( (string) $context[ $key ] ) );
+			}
+		}
+
+		echo '<span>' . esc_html__( 'Selected:', 'mavo-hub-manager' ) . ' <strong data-mhm-mark-label></strong></span> ';
+		echo '<button type="submit" class="button button-primary">' . esc_html__( 'Draw relations', 'mavo-hub-manager' ) . '</button> ';
+		echo '<button type="button" class="button" data-mhm-mark-cancel>' . esc_html__( 'Cancel', 'mavo-hub-manager' ) . '</button>';
+		echo '</form>';
+	}
+
+	/** Who we are looking at, in words, above the picture. */
+	private static function render_relations_header( array $graph, array $context ): void {
+		$post_id = (int) $graph['post'];
+
+		echo '<h3 class="mhm-graph-title">' . MHM_Admin::post_link( $post_id ) . ' ' . MHM_Admin::lang_cell( $post_id ) . '</h3>';
+
+		echo '<ul class="mhm-summary">';
+
+		foreach ( MHM_Model::types() as $type ) {
+			$side = $graph['types'][ $type ];
+			$hub  = (int) ( $side['hub'] ?? 0 );
+
+			if ( ! $hub ) {
+				printf(
+					'<li>%s <span class="mhm-muted">%s</span></li>',
+					esc_html( MHM_Model::type_label( $type ) ),
+					esc_html(
+						! empty( $side['broken_hub'] )
+							? sprintf(
+								/* translators: %d: post ID */
+								__( 'points at #%d, which is not a hub of this type', 'mavo-hub-manager' ),
+								(int) $side['broken_hub']
+							)
+							: __( 'no primary hub', 'mavo-hub-manager' )
+					)
+				);
+				continue;
+			}
+
+			printf(
+				'<li>%s: %s <span class="mhm-count">%s</span></li>',
+				esc_html( MHM_Model::type_label( $type ) ),
+				MHM_Admin::post_link( $hub ),
+				esc_html(
+					sprintf(
+						/* translators: 1: sibling count, 2: ancestor count */
+						__( '%1$s siblings · %2$d above', 'mavo-hub-manager' ),
+						count( $side['siblings'] ) . ( ! empty( $side['siblings_more'] ) ? '+' : '' ),
+						count( $side['ancestors'] )
+					)
+				)
+			);
+		}
+
+		echo '</ul>';
+	}
+
+	/** How much of the family to draw. */
+	private static function render_relations_options( array $context ): void {
+		echo '<form method="get" class="mhm-filters">';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '" />';
+		echo '<input type="hidden" name="tab" value="relations" />';
+		echo '<input type="hidden" name="post" value="' . esc_attr( (string) (int) $context['post'] ) . '" />';
+
+		printf(
+			'<label class="mhm-field"><input type="checkbox" name="cousins" value="1" %s /> %s</label> ',
+			checked( $context['cousins'], '1', false ),
+			esc_html__( 'Show cousins (the children of the hubs beside yours)', 'mavo-hub-manager' )
+		);
+
+		self::select(
+			'gmax',
+			[ 4 => '4', 8 => '8', 16 => '16', 40 => '40' ],
+			(string) $context['gmax'],
+			__( 'Siblings shown', 'mavo-hub-manager' )
+		);
+
+		echo '<button type="submit" class="button">' . esc_html__( 'Redraw', 'mavo-hub-manager' ) . '</button>';
+		echo '</form>';
+	}
+
+	private static function render_legend(): void {
+		echo '<ul class="mhm-legend">';
+		printf( '<li><span class="mhm-swatch mhm-swatch--geo"></span>%s</li>', esc_html__( 'Geographic side (G)', 'mavo-hub-manager' ) );
+		printf( '<li><span class="mhm-swatch mhm-swatch--theme"></span>%s</li>', esc_html__( 'Thematic side (T)', 'mavo-hub-manager' ) );
+		printf( '<li><span class="mhm-swatch mhm-swatch--focus"></span>%s</li>', esc_html__( '▶ the post itself', 'mavo-hub-manager' ) );
+		printf( '<li><span class="mhm-muted">%s</span></li>', esc_html__( 'Filled nodes are hubs; outlined ones are ordinary posts.', 'mavo-hub-manager' ) );
+		echo '</ul>';
+	}
+
+	/* ------------------------------------------------------- 5. hub health */
 
 	private static function render_health( array $context ): void {
 		echo '<div class="mhm-panel">';
@@ -1061,7 +1231,7 @@ class MHM_Audit_Admin {
 		echo '</div>';
 	}
 
-	/* ---------------------------------------------- 5. relationship errors */
+	/* ---------------------------------------------- 6. relationship errors */
 
 	private static function render_errors( array $context ): void {
 		$run = '1' === $context['run'];

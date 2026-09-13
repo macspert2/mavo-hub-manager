@@ -427,6 +427,88 @@ ok(
 	'each set of filters has its own signature'
 );
 
+/* -------------------------------------------------------- post relations */
+
+reset_store();
+MHM_Audit::flush_caches();
+
+// France ← Paris ← Paris en famille ← the article, with Lyon beside Paris.
+mock_post( 60, [ 'post_type' => 'page', 'post_title' => 'France', 'post_name' => 'france' ] );
+mock_post( 61, [ 'post_type' => 'page', 'post_title' => 'Paris', 'post_name' => 'paris' ] );
+mock_post( 62, [ 'post_type' => 'page', 'post_title' => 'Paris en famille', 'post_name' => 'paris-en-famille' ] );
+mock_post( 63, [ 'post_type' => 'page', 'post_title' => 'Paris insolite', 'post_name' => 'paris-insolite' ] );
+mock_post( 65, [ 'post_type' => 'page', 'post_title' => 'Lyon', 'post_name' => 'lyon' ] );
+mock_post( 64, [ 'post_type' => 'page', 'post_title' => 'City trips', 'post_name' => 'city-trips' ] );
+
+foreach ( [ 60, 61, 62, 63, 65 ] as $hub ) {
+	MHM_Model::set_hub_type( $hub, 'geo' );
+}
+MHM_Model::set_hub_type( 64, 'theme' );
+
+MHM_Model::set_primary_hub( 61, 60, 'geo' );  // Paris → France
+MHM_Model::set_primary_hub( 62, 61, 'geo' );  // Paris en famille → Paris
+MHM_Model::set_primary_hub( 63, 61, 'geo' );  // Paris insolite → Paris, beside the hub
+MHM_Model::set_primary_hub( 65, 60, 'geo' );  // Lyon → France: further away, not a cousin
+
+// The post itself, four siblings, and two cousins under Paris insolite.
+mock_post( 70, [ 'post_title' => 'Le Louvre', 'post_name' => 'le-louvre' ] );
+foreach ( [ 71, 72, 73, 74 ] as $sibling ) {
+	mock_post( $sibling, [ 'post_title' => 'Sibling ' . $sibling, 'post_name' => 'sibling-' . $sibling ] );
+	MHM_Model::set_primary_hub( $sibling, 62, 'geo' );
+}
+foreach ( [ 80, 81 ] as $cousin ) {
+	mock_post( $cousin, [ 'post_title' => 'Cousin ' . $cousin, 'post_name' => 'cousin-' . $cousin ] );
+	MHM_Model::set_primary_hub( $cousin, 63, 'geo' );
+}
+
+MHM_Model::set_primary_hub( 70, 62, 'geo' );
+MHM_Model::set_primary_hub( 70, 64, 'theme' );
+
+$graph = MHM_Audit::relation_graph( 70 );
+
+is_same( 70, $graph['post'], 'the graph is centred on the post asked for' );
+is_same( 62, $graph['types']['geo']['hub'], 'its geographic hub is the immediate one' );
+is_same( 64, $graph['types']['theme']['hub'], 'and its thematic hub sits on the other side' );
+is_same( [ 61, 60 ], $graph['types']['geo']['ancestors'], 'the hub\'s own hubs are listed nearest first' );
+is_same( [], $graph['types']['theme']['ancestors'], 'a top-level thematic hub has nothing above it' );
+is_same( 4, count( $graph['types']['geo']['siblings'] ), 'the hub\'s other children are the siblings' );
+is_same( false, in_array( 70, $graph['types']['geo']['siblings'], true ), 'the post is never its own sibling' );
+is_same( false, $graph['types']['geo']['siblings_more'], 'four siblings fit under the default cap' );
+is_same( [], $graph['types']['geo']['aunts'], 'cousins are off unless asked for' );
+
+// Every node on screen carries the facts its card shows.
+ok( isset( $graph['nodes'][62]['hub_type'] ), 'each node is described once' );
+is_same( 'geo', $graph['nodes'][62]['hub_type'], 'a hub node knows its hub type' );
+is_same( null, $graph['nodes'][71]['hub_type'], 'an ordinary sibling is not a hub' );
+is_same( 62, $graph['nodes'][71]['geo_hub'], 'and carries its own primary hub for the card' );
+
+$with_cousins = MHM_Audit::relation_graph( 70, [ 'cousins' => true ] );
+
+is_same( 1, count( $with_cousins['types']['geo']['aunts'] ), 'only a hub beside this one contributes cousins' );
+is_same( 63, $with_cousins['types']['geo']['aunts'][0]['hub'], 'and it is named' );
+is_same(
+	false,
+	in_array( 65, array_column( $with_cousins['types']['geo']['aunts'], 'hub' ), true ),
+	'a hub one level further up is not an aunt'
+);
+is_same( [ 80, 81 ], $with_cousins['types']['geo']['aunts'][0]['children'], 'its children are the cousins' );
+ok( isset( $with_cousins['nodes'][80] ), 'cousins are described too' );
+
+// Caps keep the picture from filling up.
+$capped = MHM_Audit::relation_graph( 70, [ 'max' => 2 ] );
+is_same( 2, count( $capped['types']['geo']['siblings'] ), 'the sibling cap is honoured' );
+is_same( true, $capped['types']['geo']['siblings_more'], 'and the view is told there are more' );
+
+// A stored hub of the wrong type is reported rather than drawn.
+mock_post( 90, [ 'post_title' => 'Broken child', 'post_name' => 'broken-child' ] );
+update_post_meta( 90, MHM_Model::META_GEO_HUB, 64 ); // 64 is a thematic hub.
+
+$broken = MHM_Audit::relation_graph( 90 );
+is_same( null, $broken['types']['geo']['hub'], 'a hub of the wrong type is not drawn as the hub' );
+is_same( 64, $broken['types']['geo']['broken_hub'], 'but it is reported so the page can say so' );
+
+ok( is_wp_error( MHM_Audit::relation_graph( 999999 ) ), 'a post that does not exist is an error, not an empty graph' );
+
 /* ------------------------------------------------------------- Polylang */
 
 reset_store();

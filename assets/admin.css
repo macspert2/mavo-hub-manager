@@ -116,3 +116,77 @@
 	white-space: pre-wrap;
 	word-break: break-word;
 }
+
+/* --------------------------------------------------- Post relations graph */
+
+.mhm-graph-title { margin: 12px 0 4px; }
+
+.mhm-graph-scroll {
+	border: 1px solid #dcdcde;
+	background: #fbfbfc;
+	margin: 8px 0;
+	overflow-x: auto;
+	padding: 4px;
+}
+
+.mhm-graph { display: block; }
+
+.mhm-edge      { stroke: #c3c4c7; stroke-width: 1.5; }
+.mhm-edge--geo   { stroke: #6a9a6a; }
+.mhm-edge--theme { stroke: #7f6aa8; }
+
+/* Nodes: hubs are filled, ordinary posts are outlined — never colour alone. */
+.mhm-node rect  { fill: #fff; stroke: #a7aaad; stroke-width: 1.5; }
+.mhm-node text  { fill: #1d2327; font-size: 12px; text-anchor: middle; dominant-baseline: central; }
+.mhm-node       { cursor: pointer; }
+.mhm-node:hover rect,
+.mhm-node:focus rect { stroke-width: 2.5; }
+.mhm-node:focus { outline: none; }
+.mhm-node:focus rect { stroke: #2271b1; }
+
+.mhm-node--geo rect   { stroke: #6a9a6a; }
+.mhm-node--theme rect { stroke: #7f6aa8; }
+
+.mhm-node--hub.mhm-node--geo rect,
+.mhm-node--ancestor.mhm-node--geo rect,
+.mhm-node--aunt.mhm-node--geo rect     { fill: #e6f2e6; }
+.mhm-node--hub.mhm-node--theme rect,
+.mhm-node--ancestor.mhm-node--theme rect,
+.mhm-node--aunt.mhm-node--theme rect   { fill: #eae6f5; }
+
+.mhm-node--hub rect { stroke-width: 2.5; }
+
+.mhm-node--focus rect { fill: #1d2327; stroke: #1d2327; }
+.mhm-node--focus text { fill: #fff; font-weight: 600; }
+
+.mhm-node--more rect { fill: #f0f0f1; stroke-dasharray: 3 3; }
+.mhm-node--more text { fill: #646970; font-style: italic; }
+
+.mhm-node__badge { font-size: 10px; font-weight: 700; text-anchor: middle; }
+.mhm-node--geo   .mhm-node__badge { fill: #1e5c1e; }
+.mhm-node--theme .mhm-node__badge { fill: #40306b; }
+
+.mhm-legend { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 8px 0; }
+.mhm-legend li { align-items: center; display: flex; gap: 6px; margin: 0; }
+.mhm-swatch { border: 1.5px solid #a7aaad; border-radius: 3px; display: inline-block; height: 14px; width: 22px; }
+.mhm-swatch--geo   { background: #e6f2e6; border-color: #6a9a6a; }
+.mhm-swatch--theme { background: #eae6f5; border-color: #7f6aa8; }
+.mhm-swatch--focus { background: #1d2327; border-color: #1d2327; }
+
+/* The hover card. */
+.mhm-tip {
+	background: #fff;
+	border: 1px solid #a7aaad;
+	box-shadow: 0 2px 8px rgba( 0, 0, 0, 0.15 );
+	font-size: 12px;
+	max-width: 320px;
+	padding: 8px 10px;
+	position: absolute;
+	z-index: 100;
+}
+.mhm-tip[hidden] { display: none; }
+.mhm-tip-title { font-weight: 600; margin: 0 0 4px; }
+.mhm-tip dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.mhm-tip dt { color: #646970; }
+.mhm-tip dd { margin: 0; }
+.mhm-tip-links { margin: 6px 0 0; }

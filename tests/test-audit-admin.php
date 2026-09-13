@@ -77,6 +77,33 @@ ok( str_contains( $ran, 'stored relationship(s) inspected' ), 'the run parameter
 
 is_same( $before, $GLOBALS['MOCK_META'], 'rendering an audit tab writes nothing' );
 
+echo "\nThe relations graph\n";
+
+$empty = render_audit( [ 'tab' => 'relations' ] );
+ok( str_contains( $empty, 'Search for a post or page' ), 'the graph waits for a post to be chosen' );
+ok( ! str_contains( $empty, '<svg' ), 'and draws nothing until then' );
+
+$graph = render_audit( [ 'tab' => 'relations', 'post' => 3 ] );
+
+ok( str_contains( $graph, '<svg' ), 'choosing a post draws the graph' );
+ok( str_contains( $graph, 'mhm-node--focus' ), 'the post itself is marked as the focus' );
+ok( str_contains( $graph, 'mhm-node--hub mhm-node--geo' ), 'its geographic hub is drawn on the geographic side' );
+ok( str_contains( $graph, 'Paris en famille' ), 'and named' );
+ok( str_contains( $graph, 'id="mhm-tip-3"' ), 'every node has a card to show on hover' );
+ok( str_contains( $graph, 'aria-describedby="mhm-tip-3"' ), 'wired to the node for assistive tech too' );
+ok( str_contains( $graph, 'tab=relations' ), 'nodes link to their own graph' );
+ok( str_contains( $graph, 'Show cousins' ), 'cousins are an option, off by default' );
+
+// Nothing on this tab writes, and an unknown post is an error, not a fatal.
+$before = $GLOBALS['MOCK_META'];
+render_audit( [ 'tab' => 'relations', 'post' => 3, 'cousins' => 1 ] );
+is_same( $before, $GLOBALS['MOCK_META'], 'drawing the graph writes nothing' );
+
+ok(
+	str_contains( render_audit( [ 'tab' => 'relations', 'post' => 999999 ] ), 'does not exist' ),
+	'a missing post is reported in a notice'
+);
+
 echo "\nScanning for hub candidates\n";
 
 $_GET  = [];

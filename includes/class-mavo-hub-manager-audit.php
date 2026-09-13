@@ -9,8 +9,9 @@
  *   1. Which posts/pages still have no primary hub?
  *   2. Which pages look like hubs but are not marked as one?
  *   3. Which children never link back to the hub that owns them?
- *   4. How healthy is each hub (children, parent, stale links, issues)?
- *   5. Which stored relationships are broken? (delegates to MHM_Model)
+ *   4. What is one post related to, through its hubs?
+ *   5. How healthy is each hub (children, parent, stale links, issues)?
+ *   6. Which stored relationships are broken? (delegates to MHM_Model)
  *
  * Everything is derived from the same three meta keys. No audit result is
  * cached in post meta, and no audit run repairs anything.
@@ -857,7 +858,160 @@ class MHM_Audit {
 		];
 	}
 
-	/* --------------------------------------------------- 4. hub health report */
+	/* ------------------------------------------------ 4. one post's relations */
+
+	/** Nodes a single group may contribute before it is truncated. */
+	public const GRAPH_SIBLINGS = 8;
+	public const GRAPH_AUNTS    = 3;
+	public const GRAPH_COUSINS  = 3;
+
+	/**
+	 * Everything one post is related to through the hub model.
+	 *
+	 * Per hub type: its primary hub, that hub's ancestors, its siblings (the
+	 * hub's other children), and optionally its cousins (the children of the
+	 * hub's own sibling hubs). Each group is fetched one over its cap so the
+	 * view can say "more" without counting the rest.
+	 *
+	 * Costs about a dozen queries for one post, all of them small. Nothing is
+	 * stored: this is the same hierarchy every other screen infers.
+	 *
+	 * @param array $opts cousins (bool), max (siblings per hub).
+	 * @return array|WP_Error
+	 */
+	public static function relation_graph( int $post_id, array $opts = [] ) {
+		$post = MHM_Model::get_eligible_post( $post_id );
+
+		if ( ! $post ) {
+			return new WP_Error( 'mhm_invalid_post', __( 'That post or page does not exist.', 'mavo-hub-manager' ) );
+		}
+
+		$post_id      = (int) $post->ID;
+		$max          = isset( $opts['max'] ) ? max( 1, min( 40, absint( $opts['max'] ) ) ) : self::GRAPH_SIBLINGS;
+		$with_cousins = ! empty( $opts['cousins'] );
+
+		$graph = [
+			'post'  => $post_id,
+			'types' => [],
+			'nodes' => [],
+			'ids'   => [ $post_id ],
+		];
+
+		foreach ( MHM_Model::types() as $type ) {
+			$stored = MHM_Model::get_primary_hub( $post_id, $type );
+			$hub    = ( $stored && MHM_Model::get_hub_type( $stored ) === $type ) ? $stored : null;
+
+			$side = [
+				'hub'            => $hub,
+				'broken_hub'     => ( $stored && ! $hub ) ? $stored : null,
+				'ancestors'      => [],
+				'siblings'       => [],
+				'siblings_more'  => false,
+				'aunts'          => [],
+				'aunts_more'     => false,
+			];
+
+			if ( $hub ) {
+				$side['ancestors'] = MHM_Model::get_hub_ancestors( $hub, $type );
+
+				$children = MHM_Model::get_hub_children( $hub, $type, [ 'posts_per_page' => $max + 2 ] );
+				$children = array_values( array_diff( $children, [ $post_id ] ) );
+
+				$side['siblings_more'] = count( $children ) > $max;
+				$side['siblings']      = array_slice( $children, 0, $max );
+
+				if ( $with_cousins && $side['ancestors'] ) {
+					$side = self::graph_aunts( $side, (int) $side['ancestors'][0], $hub, $type );
+				}
+			}
+
+			$graph['types'][ $type ] = $side;
+
+			$graph['ids'] = array_merge(
+				$graph['ids'],
+				array_filter( [ $hub, $side['broken_hub'] ] ),
+				$side['ancestors'],
+				$side['siblings'],
+				array_column( $side['aunts'], 'hub' ),
+				...array_column( $side['aunts'], 'children' )
+			);
+		}
+
+		$graph['ids'] = array_values( array_unique( array_map( 'absint', $graph['ids'] ) ) );
+
+		// One pass for every node on screen, instead of a query per node.
+		self::prime( $graph['ids'] );
+
+		foreach ( $graph['ids'] as $id ) {
+			$graph['nodes'][ $id ] = self::graph_node( (int) $id );
+		}
+
+		return $graph;
+	}
+
+	/** The hub's own sibling hubs, and the cousins hanging under each of them. */
+	private static function graph_aunts( array $side, int $grandparent, int $hub, string $type ): array {
+		$candidates = MHM_Model::get_hub_children(
+			$grandparent,
+			$type,
+			[ 'posts_per_page' => ( self::GRAPH_AUNTS + 1 ) * 3 ]
+		);
+
+		$aunts = [];
+		foreach ( $candidates as $candidate ) {
+			$candidate = (int) $candidate;
+
+			// Only a hub can have cousins under it.
+			if ( $candidate === $hub || MHM_Model::get_hub_type( $candidate ) !== $type ) {
+				continue;
+			}
+
+			$aunts[] = $candidate;
+		}
+
+		$side['aunts_more'] = count( $aunts ) > self::GRAPH_AUNTS;
+		$aunts              = array_slice( $aunts, 0, self::GRAPH_AUNTS );
+
+		foreach ( $aunts as $aunt ) {
+			$children = MHM_Model::get_hub_children( $aunt, $type, [ 'posts_per_page' => self::GRAPH_COUSINS + 1 ] );
+
+			$side['aunts'][] = [
+				'hub'      => $aunt,
+				'children' => array_slice( $children, 0, self::GRAPH_COUSINS ),
+				'more'     => count( $children ) > self::GRAPH_COUSINS,
+			];
+		}
+
+		return $side;
+	}
+
+	/** The facts one node shows, on the graph and in its hover card. */
+	private static function graph_node( int $post_id ): array {
+		$post = MHM_Model::get_eligible_post( $post_id );
+
+		if ( ! $post ) {
+			return [
+				'id'      => $post_id,
+				'title'   => sprintf( __( '(missing #%d)', 'mavo-hub-manager' ), $post_id ),
+				'missing' => true,
+			];
+		}
+
+		return [
+			'id'        => $post_id,
+			'title'     => get_the_title( $post ) ?: sprintf( __( '(no title) #%d', 'mavo-hub-manager' ), $post_id ),
+			'post_type' => $post->post_type,
+			'status'    => $post->post_status,
+			'lang'      => MHM_Model::get_language( $post_id ),
+			'hub_type'  => MHM_Model::get_hub_type( $post_id ),
+			'geo_hub'   => MHM_Model::get_primary_hub( $post_id, 'geo' ),
+			'theme_hub' => MHM_Model::get_primary_hub( $post_id, 'theme' ),
+			'views'     => self::get_views( $post_id ),
+			'missing'   => false,
+		];
+	}
+
+	/* --------------------------------------------------- 5. hub health report */
 
 	/**
 	 * Direct child counts for every hub at once, as hub ID => count.

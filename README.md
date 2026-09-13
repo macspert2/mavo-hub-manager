@@ -93,7 +93,7 @@ changes, so no dangling primary hub IDs are left behind.
 
 ## Audit
 
-Five on-demand reports, each its own tab, all read-only apart from one explicit
+Six on-demand reports, each its own tab, all read-only apart from one explicit
 *Remove relationship* button.
 
 | Tab | Question it answers |
@@ -101,6 +101,7 @@ Five on-demand reports, each its own tab, all read-only apart from one explicit
 | **Posts without a hub** | which posts/pages still have no primary geo hub, no theme hub, or neither — filtered by language, post type and status, **most viewed first** |
 | **Hub candidates** | which posts/pages are not marked as a hub yet, ranked by how many internal links their content contains |
 | **No link back to hub** | which children point at a hub whose page they never link back to |
+| **Post relations** | one post drawn in place: its hubs, what sits above them, its siblings and (optionally) its cousins |
 | **Hub health** | per hub: parent, depth, derived child count, hierarchy problems, and optionally the stale/unassigned link comparison |
 | **Relationship errors** | the site-wide diagnostics: missing target, wrong hub type, self-reference, cycle, cross-language |
 
@@ -130,6 +131,43 @@ everything scanned so far and becomes site-wide once the scan reports itself com
 tally is a **cache** — a transient of that user's, an hour long, holding post IDs and link
 counts, capped at 1000 entries. Nothing is written to post meta, changing a filter starts a
 new scan, and the scan is a POST so reloading the page never re-runs it.
+
+### Post relations
+
+A picture of where one post sits. Search for it, and it is drawn in the middle with the
+**geographic side on the left and the thematic side on the right**:
+
+```
+                    France                    ← the hub's hub's hub
+                       |
+   Paris insolite    Paris                     ← the hub's own hub, and the hubs beside it
+        |              |
+ c c   s  s  s      [▶ THE POST]      s  s     ← cousins · siblings · the post · siblings
+```
+
+Everything is laid out from that one bottom row — cousins, siblings, the post, siblings,
+cousins — and each parent is then centred over its own children, which is what keeps every
+edge from crossing another. Node positions are computed in PHP; there is no layout library
+and no build step.
+
+**Nodes carry a title and nothing else.** ID, post type, status, language, hub type, both
+of its primary hubs and its view count live in a card that appears on hover or keyboard
+focus. The card is real markup on the page, referenced by `aria-describedby`, so the
+information is reachable without the script and by assistive technology. Clicking any node
+re-centres the graph on it, which makes the whole hierarchy walkable — and since that is a
+plain link, the graph is bookmarkable and opens in a new tab like anything else.
+
+Geographic and thematic are told apart by colour (green and purple, the same two the badges
+use), **and** by a `G`/`T` letter on every hub node, because colour is never the only cue.
+Hub nodes are filled; ordinary posts are outlined; the post itself is dark with a `▶`.
+
+Against crowding: siblings are capped (4/8/16/40, default 8) and truncated groups end in a
+dashed `+ more` node, **cousins are off by default**, and at most three sibling hubs
+contribute three cousins each. The figure scrolls horizontally rather than shrinking.
+
+This is the one report that runs as soon as you choose a post rather than behind *Run
+report* — it is scoped to a single post, about a dozen small queries, none of them
+site-wide.
 
 ### Ordering by views
 
@@ -308,11 +346,15 @@ No WordPress required; the harness stubs what the model and scanner call.
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
 | `test-admin.php` | admin-post routing, confirmations, page rendering |
-| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), candidate counting and batched scanning, views meta, hub health |
-| `test-audit-admin.php` | every audit tab renders, writes nothing, the candidate scan caches rather than stores, and removal redirects back |
+| `test-audit.php` | relation graphs (hubs, ancestors, siblings, cousins, caps), link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), candidate counting and batched scanning, views meta, hub health |
+| `test-audit-admin.php` | every audit tab renders, the graph draws and links, writes nothing, the candidate scan caches rather than stores, and removal redirects back |
 
 ## Out of scope for V0
 
 Secondary hubs, multiple primary hubs, hub taxonomies, child lists on hubs, frontend
-breadcrumbs or link strips, automatic rescan on save, automatic relationship deletion,
-graph visualisation, and all recommendation scoring (that stays in `mavo-for-you`).
+breadcrumbs or link strips, automatic rescan on save, automatic relationship deletion, and
+all recommendation scoring (that stays in `mavo-for-you`).
+
+*(Graph visualisation was on this list for V0 and was added afterwards, on request, as the
+read-only **Post relations** tab. It stores nothing and infers everything, like the rest of
+the audit.)*

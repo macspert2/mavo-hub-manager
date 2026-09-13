@@ -22,6 +22,7 @@ require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-scanner.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-ajax.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-admin.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit.php';
+require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-graph.php';
 require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit-admin.php';
 
 add_action( 'plugins_loaded', static function () {
