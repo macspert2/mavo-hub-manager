@@ -93,15 +93,43 @@ changes, so no dangling primary hub IDs are left behind.
 
 ## Audit
 
-Four on-demand reports, each its own tab, all read-only apart from one explicit
+Five on-demand reports, each its own tab, all read-only apart from one explicit
 *Remove relationship* button.
 
 | Tab | Question it answers |
 |---|---|
 | **Posts without a hub** | which posts/pages still have no primary geo hub, no theme hub, or neither — filtered by language, post type and status, **most viewed first** |
+| **Hub candidates** | which posts/pages are not marked as a hub yet, ranked by how many internal links their content contains |
 | **No link back to hub** | which children point at a hub whose page they never link back to |
 | **Hub health** | per hub: parent, depth, derived child count, hierarchy problems, and optionally the stale/unassigned link comparison |
 | **Relationship errors** | the site-wide diagnostics: missing target, wrong hub type, self-reference, cycle, cross-language |
+
+### Hub candidates
+
+A hub is a page that points at many others, so the candidates report ranks every post and
+page that is **not** marked as a hub by the number of distinct internal links its own
+content contains. Each row marks it as a geographic or thematic hub in one click, landing
+on Tools → Hub Manager with it selected, ready to scan and assign.
+
+The count is taken from link keys without resolving anything, so it costs no queries — and
+so a link to a category, a tag or an attachment counts too, and links that only exist in
+shortcode output do not. Several links to one destination count once, and self-links never
+count. It ranks candidates; the hub scanner is what decides which of those links become
+children once the page is actually marked.
+
+Reading content is the expensive part, so the scan is explicit and incremental:
+
+```
+Scanned 450 of 3,120 posts and pages.
+312 candidates so far — the ranking covers what has been scanned, not yet the whole site.
+[ Scan next 150 ]  [ Start over ]
+```
+
+Each click reads one batch and adds it to the tally; the leaderboard is sorted over
+everything scanned so far and becomes site-wide once the scan reports itself complete. The
+tally is a **cache** — a transient of that user's, an hour long, holding post IDs and link
+counts, capped at 1000 entries. Nothing is written to post meta, changing a filter starts a
+new scan, and the scan is a POST so reloading the page never re-runs it.
 
 ### Ordering by views
 
@@ -266,8 +294,8 @@ No WordPress required; the harness stubs what the model and scanner call.
 | `test-no-polylang.php` | everything still works with Polylang absent |
 | `test-diagnostics.php` | orphan, wrong-type, self-reference, cycle, cross-language reports |
 | `test-admin.php` | admin-post routing, confirmations, page rendering |
-| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), views meta, hub health |
-| `test-audit-admin.php` | every audit tab renders, writes nothing, and removal redirects back |
+| `test-audit.php` | link-back detection (anchors, `mavo_hub_strip` with and without a slug, `geo_related`, ancestors), candidate counting and batched scanning, views meta, hub health |
+| `test-audit-admin.php` | every audit tab renders, writes nothing, the candidate scan caches rather than stores, and removal redirects back |
 
 ## Out of scope for V0
 

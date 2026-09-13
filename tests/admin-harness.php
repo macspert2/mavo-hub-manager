@@ -7,6 +7,7 @@
 require_once __DIR__ . '/harness.php';
 
 define( 'MINUTE_IN_SECONDS', 60 );
+define( 'HOUR_IN_SECONDS', 3600 );
 define( 'MHM_PLUGIN_URL', 'https://www.mamanvoyage.com/wp-content/plugins/mavo-hub-manager/' );
 define( 'MHM_VERSION', 'test' );
 

@@ -354,6 +354,72 @@ foreach ( $broken['rows'] as $row ) {
 ok( $issues > 0, 'a primary hub pointing at a missing object is reported on the hub row' );
 is_same( 1, $broken['summary']['with_issues'], 'the summary counts hubs with problems' );
 
+/* --------------------------------------------------------- hub candidates */
+
+reset_store();
+MHM_Audit::flush_caches();
+
+mock_post( 40, [ 'post_type' => 'page', 'post_title' => 'Index page', 'post_name' => 'index-page' ] );
+mock_post( 41, [ 'post_title' => 'Un article', 'post_name' => 'un-article' ] );
+mock_post( 42, [ 'post_title' => 'Deux', 'post_name' => 'deux' ] );
+mock_post( 43, [ 'post_title' => 'Trois', 'post_name' => 'trois' ] );
+mock_post( 44, [ 'post_type' => 'page', 'post_title' => 'Deja hub', 'post_name' => 'deja-hub' ] );
+
+$GLOBALS['MOCK_POSTS'][40]->post_content =
+	'<a href="/un-article/">Un</a>' .
+	'<a href="https://www.mamanvoyage.com/deux/">Deux</a>' .
+	'<a href="/2024/05/trois/">Trois</a>' .
+	'<a href="/deux/#plus-bas">Deux encore</a>' .   // Same target twice.
+	'<a href="/index-page/">Soi-même</a>' .          // Self-link.
+	'<a href="https://example.com/">Externe</a>' .   // External.
+	'<a href="#ancre">Ancre</a>' .                   // Fragment only.
+	'<a href="mailto:a@b.c">Mail</a>';               // Not a link to a page.
+
+$GLOBALS['MOCK_POSTS'][41]->post_content = '<a href="/deux/">Deux</a>';
+$GLOBALS['MOCK_POSTS'][42]->post_content = '<p>Aucun lien.</p>';
+$GLOBALS['MOCK_POSTS'][44]->post_content = '<a href="/deux/">Deux</a><a href="/trois/">Trois</a>';
+
+MHM_Model::set_hub_type( 44, 'geo' );
+
+is_same( 3, MHM_Audit::count_internal_links( 40 ), 'distinct internal targets are counted once each' );
+is_same( 1, MHM_Audit::count_internal_links( 41 ), 'one link is one candidate point' );
+is_same( 0, MHM_Audit::count_internal_links( 42 ), 'a post with no internal link scores zero' );
+
+$state = MHM_Audit::scan_candidates( [ 'status' => 'any' ] );
+
+is_same( 4, $state['total'], 'the hub is left out of the job size' );
+is_same( 4, $state['scanned'], 'a batch larger than the site scans everything' );
+is_same( true, $state['done'], 'and reports the scan as complete' );
+is_same( false, isset( $state['counts'][44] ), 'a page already marked as a hub is never a candidate' );
+is_same( false, isset( $state['counts'][42] ), 'a post with no internal links is left out of the tally' );
+is_same( [ 40 => 3, 41 => 1 ], $state['counts'], 'the tally is ordered by link count, descending' );
+
+$page = MHM_Audit::candidates_rows( $state );
+
+is_same( 2, count( $page['rows'] ), 'both candidates are listed' );
+is_same( 40, $page['rows'][0]['post'], 'the page with the most internal links ranks first' );
+is_same( 1, $page['rows'][0]['rank'], 'ranks start at one' );
+is_same( 3, $page['rows'][0]['links'], 'the row carries its link count' );
+is_same( false, $page['has_more'], 'one page holds them all' );
+
+// A batch smaller than the site leaves a cursor to continue from.
+$first = MHM_Audit::scan_candidates( [ 'status' => 'any', 'batch' => 2 ] );
+is_same( 2, $first['scanned'], 'the first pass reads one batch' );
+is_same( false, $first['done'], 'and knows there is more to read' );
+
+$second = MHM_Audit::scan_candidates( [ 'status' => 'any', 'batch' => 2 ], $first );
+is_same( 4, $second['scanned'], 'the second pass continues where the first stopped' );
+is_same( true, $second['done'], 'and finishes the job' );
+is_same( [ 40 => 3, 41 => 1 ], $second['counts'], 'the tally accumulates across passes' );
+
+// Changing a filter must start a new scan rather than mix two of them.
+$switched = MHM_Audit::scan_candidates( [ 'status' => 'draft', 'batch' => 2 ], $second );
+is_same( 2, $switched['scanned'], 'changing a filter starts the scan over' );
+ok(
+	MHM_Audit::candidates_signature( [ 'status' => 'draft' ] ) !== MHM_Audit::candidates_signature( [ 'status' => 'publish' ] ),
+	'each set of filters has its own signature'
+);
+
 /* ------------------------------------------------------------- Polylang */
 
 reset_store();

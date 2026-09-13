@@ -55,6 +55,7 @@ function untrailingslashit( $string ) { return rtrim( (string) $string, '/\\' );
 function _prime_post_caches( $ids, $terms = true, $meta = true ) {}
 function update_meta_cache( $type, $ids ) { return true; }
 function get_num_queries() { return 0; }
+function wp_json_encode( $data, $options = 0, $depth = 512 ) { return json_encode( $data, $options, $depth ); }
 
 /* ------------------------------------------------------------------ posts */
 
@@ -165,6 +166,7 @@ if ( '1' !== getenv( 'MHM_NO_PLL' ) ) {
 
 class WP_Query {
 	public $posts = [];
+	public $found_posts = 0;
 
 	public function __construct( array $args = [] ) {
 		$types = (array) ( $args['post_type'] ?? [ 'post', 'page' ] );
@@ -178,13 +180,24 @@ class WP_Query {
 			$found[] = (int) $id;
 		}
 
-		usort(
-			$found,
-			static fn( $a, $b ) => strcasecmp(
-				$GLOBALS['MOCK_POSTS'][ $a ]->post_title,
-				$GLOBALS['MOCK_POSTS'][ $b ]->post_title
-			)
-		);
+		if ( 'ID' === ( $args['orderby'] ?? '' ) ) {
+			sort( $found );
+		} else {
+			usort(
+				$found,
+				static fn( $a, $b ) => strcasecmp(
+					$GLOBALS['MOCK_POSTS'][ $a ]->post_title,
+					$GLOBALS['MOCK_POSTS'][ $b ]->post_title
+				)
+			);
+		}
+
+		$this->found_posts = count( $found );
+
+		$offset = (int) ( $args['offset'] ?? 0 );
+		if ( $offset > 0 ) {
+			$found = array_slice( $found, $offset );
+		}
 
 		$limit = (int) ( $args['posts_per_page'] ?? -1 );
 		if ( $limit > 0 ) {
@@ -213,6 +226,7 @@ class WP_Query {
 			$compare = $clause['compare'] ?? '=';
 
 			if ( 'EXISTS' === $compare && '' === $stored ) { return false; }
+			if ( 'NOT EXISTS' === $compare && '' !== $stored ) { return false; }
 			if ( 'IN' === $compare && ! in_array( $stored, array_map( 'strval', (array) $clause['value'] ), true ) ) { return false; }
 			if ( '=' === $compare && isset( $clause['value'] ) && $stored !== (string) $clause['value'] ) { return false; }
 		}

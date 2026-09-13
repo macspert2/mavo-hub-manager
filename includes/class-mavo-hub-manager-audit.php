@@ -7,9 +7,10 @@
  * scale:
  *
  *   1. Which posts/pages still have no primary hub?
- *   2. Which children never link back to the hub that owns them?
- *   3. How healthy is each hub (children, parent, stale links, issues)?
- *   4. Which stored relationships are broken? (delegates to MHM_Model)
+ *   2. Which pages look like hubs but are not marked as one?
+ *   3. Which children never link back to the hub that owns them?
+ *   4. How healthy is each hub (children, parent, stale links, issues)?
+ *   5. Which stored relationships are broken? (delegates to MHM_Model)
  *
  * Everything is derived from the same three meta keys. No audit result is
  * cached in post meta, and no audit run repairs anything.
@@ -38,6 +39,12 @@ class MHM_Audit {
 
 	/** How many assigned children one "no link back" pass reads content for. */
 	public const DEFAULT_BATCH = 100;
+
+	/** How many posts one "hub candidates" pass reads content for. */
+	public const DEFAULT_CANDIDATE_BATCH = 150;
+
+	/** Ceiling on the cached candidate tally. */
+	public const MAX_CANDIDATES = 1000;
 
 	/** Link-back outcomes. */
 	public const LINK_ANCHOR    = 'anchor';
@@ -560,7 +567,209 @@ class MHM_Audit {
 		];
 	}
 
-	/* ------------------------------------------- 2. children with no link back */
+	/* ------------------------------------------------- 2. hub candidates */
+
+	/**
+	 * How many distinct internal targets this post's own content links to.
+	 *
+	 * Counted from link keys, so it costs no queries — which also means the
+	 * links are not resolved to post IDs: a link to a category, a tag or an
+	 * attachment counts here, and only the hub scanner (once the page is
+	 * actually marked as a hub) decides what is an eligible child. It is a
+	 * ranking signal, not a child count.
+	 *
+	 * Links to the post itself are ignored, and several links to one target
+	 * count once.
+	 */
+	public static function count_internal_links( int $post_id ): int {
+		$post_id = absint( $post_id );
+		$post    = MHM_Model::get_eligible_post( $post_id );
+
+		if ( ! $post ) {
+			return 0;
+		}
+
+		$self    = self::post_keys( $post_id );
+		$targets = [];
+
+		foreach ( MHM_Scanner::extract_links( (string) $post->post_content ) as $url ) {
+			$keys = self::url_keys( $url );
+
+			if ( ! $keys || array_intersect( $keys, $self ) ) {
+				continue; // External, unusable, or a self-link.
+			}
+
+			$targets[ self::canonical_key( $keys ) ] = true;
+		}
+
+		return count( $targets );
+	}
+
+	/**
+	 * One key per link target, so two spellings of the same destination
+	 * (/slug/ and /2024/05/slug/) are not counted twice.
+	 */
+	private static function canonical_key( array $keys ): string {
+		foreach ( [ 'slug:', 'path:', 'id:' ] as $prefix ) {
+			foreach ( $keys as $key ) {
+				if ( str_starts_with( $key, $prefix ) ) {
+					return $key;
+				}
+			}
+		}
+
+		return (string) reset( $keys );
+	}
+
+	/** A fresh, empty candidates scan for one set of filters. */
+	public static function candidates_state( string $signature = '' ): array {
+		return [
+			'signature' => $signature,
+			'cursor'    => 0,
+			'scanned'   => 0,
+			'total'     => 0,
+			'counts'    => [],
+			'done'      => false,
+		];
+	}
+
+	/** Filters that a scan belongs to. Changing any of them starts a new one. */
+	public static function candidates_signature( array $args ): string {
+		return md5(
+			(string) wp_json_encode(
+				[
+					'lang'   => (string) ( $args['lang'] ?? '' ),
+					'ptype'  => (string) ( $args['post_type'] ?? 'any' ),
+					'status' => (string) ( $args['status'] ?? 'publish' ),
+				]
+			)
+		);
+	}
+
+	/**
+	 * Scan the next batch of not-yet-hub posts and add them to the tally.
+	 *
+	 * Reading content is what costs, so one pass reads one batch and the
+	 * caller keeps the returned state — the leaderboard is sorted over
+	 * everything scanned so far and becomes site-wide once `done` is true.
+	 * Nothing is written to post meta; the state is a cache the caller owns.
+	 *
+	 * @param array $args  lang, post_type, status, batch.
+	 * @param array $state State from the previous pass, or [] to start.
+	 * @return array The new state.
+	 */
+	public static function scan_candidates( array $args = [], array $state = [] ): array {
+		$batch     = isset( $args['batch'] ) ? max( 1, min( 500, absint( $args['batch'] ) ) ) : self::DEFAULT_CANDIDATE_BATCH;
+		$signature = self::candidates_signature( $args );
+
+		if ( ! isset( $state['signature'] ) || $state['signature'] !== $signature ) {
+			$state = self::candidates_state( $signature );
+		}
+
+		$query_args = array_merge(
+			self::base_args( $args ),
+			[
+				'posts_per_page' => $batch,
+				'offset'         => (int) $state['cursor'],
+				// Scan order only decides what is read first; the leaderboard
+				// is sorted by link count. ID keeps the cursor stable and needs
+				// no join.
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
+				'meta_query'     => [ // phpcs:ignore WordPress.DB.SlowDBQuery -- on-demand audit screen.
+					[ 'key' => MHM_Model::META_HUB_TYPE, 'compare' => 'NOT EXISTS' ],
+				],
+			]
+		);
+
+		// The size of the job, counted once when the scan starts.
+		if ( 0 === (int) $state['cursor'] ) {
+			$counter = new WP_Query(
+				array_merge( $query_args, [ 'posts_per_page' => 1, 'offset' => 0, 'no_found_rows' => false ] )
+			);
+
+			$state['total'] = (int) ( $counter->found_posts ?? 0 );
+		}
+
+		$ids = array_map( 'absint', (array) ( new WP_Query( $query_args ) )->posts );
+
+		self::prime( $ids );
+
+		foreach ( $ids as $post_id ) {
+			$links = self::count_internal_links( $post_id );
+
+			// Only pages that link somewhere are candidates, and dropping the
+			// zeroes is what keeps the cached tally small.
+			if ( $links > 0 ) {
+				$state['counts'][ $post_id ] = $links;
+			}
+		}
+
+		self::flush_caches();
+
+		$state['cursor']  = (int) $state['cursor'] + count( $ids );
+		$state['scanned'] = (int) $state['scanned'] + count( $ids );
+
+		// A short batch means the end; so does reaching the size counted when
+		// the scan started, which spares the editor one empty pass.
+		$state['done'] = count( $ids ) < $batch || $state['cursor'] >= (int) $state['total'];
+
+		arsort( $state['counts'], SORT_NUMERIC );
+
+		// A hard ceiling on the cached tally: nobody marks the 1000th best
+		// candidate, and the state has to stay small enough to cache.
+		if ( count( $state['counts'] ) > self::MAX_CANDIDATES ) {
+			$state['counts'] = array_slice( $state['counts'], 0, self::MAX_CANDIDATES, true );
+		}
+
+		return $state;
+	}
+
+	/**
+	 * One page of the leaderboard.
+	 *
+	 * @return array{rows:array,paged:int,per_page:int,has_more:bool,found:int}
+	 */
+	public static function candidates_rows( array $state, int $paged = 1, int $per_page = self::DEFAULT_PER_PAGE ): array {
+		$counts   = isset( $state['counts'] ) && is_array( $state['counts'] ) ? $state['counts'] : [];
+		$paged    = max( 1, $paged );
+		$per_page = max( 1, min( 200, $per_page ) );
+		$offset   = ( $paged - 1 ) * $per_page;
+
+		$page = array_slice( $counts, $offset, $per_page, true );
+
+		self::prime( array_keys( $page ) );
+
+		$rows = [];
+		$rank = $offset;
+
+		foreach ( $page as $post_id => $links ) {
+			$post = MHM_Model::get_eligible_post( (int) $post_id );
+
+			if ( ! $post ) {
+				continue; // Deleted since the scan; the tally is only a cache.
+			}
+
+			$rows[] = [
+				'post'      => (int) $post_id,
+				'links'     => (int) $links,
+				'rank'      => ++$rank,
+				'post_type' => $post->post_type,
+				'status'    => $post->post_status,
+				'views'     => self::get_views( (int) $post_id ),
+			];
+		}
+
+		return [
+			'rows'     => $rows,
+			'paged'    => $paged,
+			'per_page' => $per_page,
+			'has_more' => count( $counts ) > $offset + $per_page,
+			'found'    => count( $counts ),
+		];
+	}
+
+	/* ------------------------------------------- 3. children with no link back */
 
 	/**
 	 * Children that point at a hub whose page they never link back to.
@@ -654,7 +863,7 @@ class MHM_Audit {
 		];
 	}
 
-	/* --------------------------------------------------- 3. hub health report */
+	/* --------------------------------------------------- 4. hub health report */
 
 	/**
 	 * Direct child counts for every hub at once, as hub ID => count.

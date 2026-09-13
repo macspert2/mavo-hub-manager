@@ -20,10 +20,11 @@ class MHM_Audit_Admin {
 	/** Tab => label. */
 	public static function tabs(): array {
 		return [
-			'missing'  => __( 'Posts without a hub', 'mavo-hub-manager' ),
-			'linkback' => __( 'No link back to hub', 'mavo-hub-manager' ),
-			'health'   => __( 'Hub health', 'mavo-hub-manager' ),
-			'errors'   => __( 'Relationship errors', 'mavo-hub-manager' ),
+			'missing'    => __( 'Posts without a hub', 'mavo-hub-manager' ),
+			'candidates' => __( 'Hub candidates', 'mavo-hub-manager' ),
+			'linkback'   => __( 'No link back to hub', 'mavo-hub-manager' ),
+			'health'     => __( 'Hub health', 'mavo-hub-manager' ),
+			'errors'     => __( 'Relationship errors', 'mavo-hub-manager' ),
 		];
 	}
 
@@ -51,13 +52,26 @@ class MHM_Audit_Admin {
 
 	/* ---------------------------------------------------------- POST action */
 
-	/** The only mutation on this page: drop one broken stored relationship. */
+	/**
+	 * The page's own POST tasks.
+	 *
+	 * Only one of them touches a relationship (removing a broken one). The
+	 * candidate scan writes nothing but its own cached tally, and it is a POST
+	 * so that reloading the page never re-runs it.
+	 */
 	public static function handle_post(): void {
 		if ( ! current_user_can( self::CAPABILITY ) ) {
 			wp_die( esc_html__( 'You are not allowed to manage hubs.', 'mavo-hub-manager' ), 403 );
 		}
 
 		check_admin_referer( self::ACTION );
+
+		$task = isset( $_POST['task'] ) ? sanitize_key( wp_unslash( $_POST['task'] ) ) : 'remove_relationship';
+
+		if ( 'scan_candidates' === $task || 'reset_candidates' === $task ) {
+			self::task_candidates( 'reset_candidates' === $task );
+			self::redirect_back();
+		}
 
 		$child = isset( $_POST['child'] ) ? absint( wp_unslash( $_POST['child'] ) ) : 0;
 		$type  = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
@@ -83,7 +97,13 @@ class MHM_Audit_Admin {
 			}
 		}
 
+		self::redirect_back();
+	}
+
+	/** Back to the tab and filters the form was submitted from. */
+	private static function redirect_back(): void {
 		$redirect = [];
+
 		foreach ( [ 'tab', 'mode', 'ltype', 'htype', 'lang', 'ptype', 'status', 'stale', 'paged', 'offset', 's', 'sort', 'run' ] as $key ) {
 			if ( isset( $_POST[ $key ] ) && '' !== $_POST[ $key ] ) {
 				$redirect[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
@@ -92,6 +112,53 @@ class MHM_Audit_Admin {
 
 		wp_safe_redirect( self::page_url( $redirect ) );
 		exit;
+	}
+
+	/**
+	 * Scan one more batch of candidates, or throw the tally away.
+	 *
+	 * The tally is a cache: a transient of this user's, an hour long, holding
+	 * post IDs and link counts. No post meta is involved.
+	 */
+	private static function task_candidates( bool $reset ): void {
+		if ( $reset ) {
+			delete_transient( self::candidates_key() );
+			MHM_Admin::add_notice( 'success', __( 'The candidate scan was cleared.', 'mavo-hub-manager' ) );
+
+			return;
+		}
+
+		$args = [
+			'lang'      => isset( $_POST['lang'] ) ? sanitize_key( wp_unslash( $_POST['lang'] ) ) : '',
+			'post_type' => isset( $_POST['ptype'] ) ? sanitize_key( wp_unslash( $_POST['ptype'] ) ) : 'any',
+			'status'    => isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : 'publish',
+		];
+
+		$state = MHM_Audit::scan_candidates( $args, self::stored_candidates() );
+
+		set_transient( self::candidates_key(), $state, HOUR_IN_SECONDS );
+
+		MHM_Admin::add_notice(
+			'success',
+			sprintf(
+				/* translators: 1: posts scanned so far, 2: posts to scan, 3: candidates found */
+				__( 'Scanned %1$d of %2$d posts and pages; %3$d link somewhere internally.', 'mavo-hub-manager' ),
+				(int) $state['scanned'],
+				(int) $state['total'],
+				count( (array) $state['counts'] )
+			)
+		);
+	}
+
+	private static function candidates_key(): string {
+		return 'mhm_candidates_' . get_current_user_id();
+	}
+
+	/** The cached tally, or an empty state. */
+	private static function stored_candidates(): array {
+		$state = get_transient( self::candidates_key() );
+
+		return is_array( $state ) ? $state : [];
 	}
 
 	/* -------------------------------------------------------------- context */
@@ -173,6 +240,10 @@ class MHM_Audit_Admin {
 		echo '</h2>';
 
 		switch ( $context['tab'] ) {
+			case 'candidates':
+				self::render_candidates( $context );
+				break;
+
 			case 'linkback':
 				self::render_linkback( $context );
 				break;
@@ -424,7 +495,204 @@ class MHM_Audit_Admin {
 		echo '</p>';
 	}
 
-	/* --------------------------------------------- 2. no link back to the hub */
+	/* ------------------------------------------------------ 2. hub candidates */
+
+	private static function render_candidates( array $context ): void {
+		$state = self::stored_candidates();
+
+		echo '<div class="mhm-panel">';
+		echo '<h2>' . esc_html__( 'Hub candidates', 'mavo-hub-manager' ) . '</h2>';
+		echo '<p class="description">' . esc_html__( 'Posts and pages that are not marked as a hub, ranked by how many distinct internal links their own content contains. A page that points at thirty others is doing a hub\'s job already.', 'mavo-hub-manager' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'The count is taken from the stored content without resolving links, so a link to a category, a tag or an attachment counts too, and links produced by shortcodes do not. It ranks candidates; the hub scanner is what decides which links become children once the page is marked.', 'mavo-hub-manager' ) . '</p>';
+
+		self::open_filters( $context );
+		self::language_select( $context );
+		self::post_type_select( $context );
+		self::select( 'status', self::statuses(), $context['status'], __( 'Status', 'mavo-hub-manager' ) );
+		self::close_filters( $context );
+
+		$signature = MHM_Audit::candidates_signature(
+			[
+				'lang'      => $context['lang'],
+				'post_type' => $context['ptype'],
+				'status'    => $context['status'],
+			]
+		);
+
+		// Changing a filter invalidates the tally rather than mixing two scans.
+		$stale_filters = $state && ( $state['signature'] ?? '' ) !== $signature;
+		if ( $stale_filters ) {
+			$state = [];
+		}
+
+		self::render_candidates_controls( $context, $state );
+
+		if ( ! $state ) {
+			echo '<p>' . esc_html(
+				$stale_filters
+					? __( 'These filters have not been scanned yet. Reading post content is the expensive part, so the scan runs one batch at a time, on your click.', 'mavo-hub-manager' )
+					: __( 'Nothing scanned yet. Reading post content is the expensive part, so the scan runs one batch at a time, on your click.', 'mavo-hub-manager' )
+			) . '</p></div>';
+
+			return;
+		}
+
+		$report = MHM_Audit::candidates_rows( $state, (int) $context['paged'] );
+
+		if ( ! $report['rows'] ) {
+			echo '<p class="mhm-muted">' . esc_html__( 'No post scanned so far links anywhere internally.', 'mavo-hub-manager' ) . '</p></div>';
+
+			return;
+		}
+
+		echo '<table class="widefat striped mhm-table"><thead><tr>';
+		echo '<th class="mhm-col-num">' . esc_html__( '#', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Internal links', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Title', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Post type', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Status', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Language', 'mavo-hub-manager' ) . '</th>';
+		echo '<th class="mhm-col-num">' . esc_html__( 'Views', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Mark as hub', 'mavo-hub-manager' ) . '</th>';
+		echo '<th>' . esc_html__( 'Actions', 'mavo-hub-manager' ) . '</th>';
+		echo '</tr></thead><tbody>';
+
+		foreach ( $report['rows'] as $row ) {
+			$post_id = (int) $row['post'];
+
+			echo '<tr>';
+			echo '<td class="mhm-col-num">' . (int) $row['rank'] . '</td>';
+			echo '<td class="mhm-col-num"><strong>' . (int) $row['links'] . '</strong></td>';
+			echo '<td>' . MHM_Admin::post_link( $post_id ) . '</td>';
+			echo '<td>' . esc_html( (string) $row['post_type'] ) . '</td>';
+			echo '<td>' . esc_html( (string) $row['status'] ) . '</td>';
+			echo '<td>' . MHM_Admin::lang_cell( $post_id ) . '</td>';
+			echo '<td class="mhm-col-num">' . ( null === $row['views'] ? '<span class="mhm-muted">—</span>' : esc_html( number_format_i18n( (int) $row['views'] ) ) ) . '</td>';
+			echo '<td class="mhm-actions">';
+			self::render_mark_form( $post_id, 'geo' );
+			self::render_mark_form( $post_id, 'theme' );
+			echo '</td>';
+			echo '<td><a class="button button-small" href="' . esc_url( (string) get_edit_post_link( $post_id ) ) . '">' . esc_html__( 'Edit', 'mavo-hub-manager' ) . '</a> ';
+			echo '<a class="button button-small" href="' . esc_url( (string) get_permalink( $post_id ) ) . '">' . esc_html__( 'View', 'mavo-hub-manager' ) . '</a></td>';
+			echo '</tr>';
+		}
+
+		echo '</tbody></table>';
+
+		self::render_pagination( $context, (int) $report['paged'], (bool) $report['has_more'] );
+
+		echo '<p class="description">' . esc_html__( 'Marking a page as a hub takes you to Tools → Hub Manager with it selected, where its links can be scanned and its children assigned.', 'mavo-hub-manager' ) . '</p>';
+		echo '</div>';
+	}
+
+	/** Scan progress and the two buttons that drive it. */
+	private static function render_candidates_controls( array $context, array $state ): void {
+		$scanned = (int) ( $state['scanned'] ?? 0 );
+		$total   = (int) ( $state['total'] ?? 0 );
+		$found   = isset( $state['counts'] ) ? count( (array) $state['counts'] ) : 0;
+		$done    = ! empty( $state['done'] );
+
+		if ( $state ) {
+			printf(
+				'<p><strong>%s</strong> %s</p>',
+				esc_html(
+					sprintf(
+						/* translators: 1: posts scanned, 2: posts to scan */
+						__( 'Scanned %1$d of %2$d posts and pages.', 'mavo-hub-manager' ),
+						$scanned,
+						$total
+					)
+				),
+				esc_html(
+					$done
+						? sprintf(
+							/* translators: %d: number of candidates */
+							__( 'The scan is complete, so this ranking now covers the whole site: %d candidates link somewhere internally.', 'mavo-hub-manager' ),
+							$found
+						)
+						: sprintf(
+							/* translators: %d: number of candidates */
+							__( '%d candidates so far — the ranking covers what has been scanned, not yet the whole site.', 'mavo-hub-manager' ),
+							$found
+						)
+				)
+			);
+		}
+
+		echo '<p class="mhm-actions">';
+
+		if ( ! $done ) {
+			self::render_task_form(
+				'scan_candidates',
+				$context,
+				$state
+					? sprintf(
+						/* translators: %d: batch size */
+						__( 'Scan next %d ›', 'mavo-hub-manager' ),
+						MHM_Audit::DEFAULT_CANDIDATE_BATCH
+					)
+					: sprintf(
+						/* translators: %d: batch size */
+						__( 'Scan the first %d', 'mavo-hub-manager' ),
+						MHM_Audit::DEFAULT_CANDIDATE_BATCH
+					),
+				'button button-primary'
+			);
+		}
+
+		if ( $state ) {
+			self::render_task_form( 'reset_candidates', $context, __( 'Start over', 'mavo-hub-manager' ), 'button' );
+		}
+
+		echo '</p>';
+
+		if ( $state && ! $done ) {
+			echo '<p class="description">' . esc_html__( 'The tally is kept as a cache of yours for an hour — post IDs and link counts, nothing in post meta. Changing a filter starts a new scan.', 'mavo-hub-manager' ) . '</p>';
+		}
+	}
+
+	/** A one-button form for one of this page's own tasks. */
+	private static function render_task_form( string $task, array $context, string $label, string $class = 'button' ): void {
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" class="mhm-inline-form">';
+		wp_nonce_field( self::ACTION );
+		echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '" />';
+		echo '<input type="hidden" name="task" value="' . esc_attr( $task ) . '" />';
+
+		foreach ( $context as $key => $value ) {
+			if ( '' === $value || null === $value ) {
+				continue;
+			}
+			printf( '<input type="hidden" name="%s" value="%s" />', esc_attr( (string) $key ), esc_attr( (string) $value ) );
+		}
+
+		printf( '<button type="submit" class="%s">%s</button>', esc_attr( $class ), esc_html( $label ) );
+		echo '</form>';
+	}
+
+	/**
+	 * Mark a candidate as a hub.
+	 *
+	 * Posts to the Hub Manager's own handler, so marking goes through exactly
+	 * one code path — including its confirmation when the page already has
+	 * children — and lands on the manager page with the hub selected.
+	 */
+	private static function render_mark_form( int $post_id, string $type ): void {
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" class="mhm-inline-form">';
+		wp_nonce_field( MHM_Admin::ACTION );
+		echo '<input type="hidden" name="action" value="' . esc_attr( MHM_Admin::ACTION ) . '" />';
+		echo '<input type="hidden" name="task" value="mark_hub" />';
+		echo '<input type="hidden" name="post_id" value="' . esc_attr( (string) $post_id ) . '" />';
+		echo '<input type="hidden" name="hub" value="' . esc_attr( (string) $post_id ) . '" />';
+		echo '<input type="hidden" name="hub_type" value="' . esc_attr( $type ) . '" />';
+
+		printf(
+			'<button type="submit" class="button button-small">%s</button>',
+			esc_html( 'geo' === $type ? __( 'Geographic', 'mavo-hub-manager' ) : __( 'Thematic', 'mavo-hub-manager' ) )
+		);
+		echo '</form>';
+	}
+
+	/* --------------------------------------------- 3. no link back to the hub */
 
 	private static function render_linkback( array $context ): void {
 		echo '<div class="mhm-panel">';
@@ -594,7 +862,7 @@ class MHM_Audit_Admin {
 		echo '</p>';
 	}
 
-	/* ------------------------------------------------------- 3. hub health */
+	/* ------------------------------------------------------- 4. hub health */
 
 	private static function render_health( array $context ): void {
 		echo '<div class="mhm-panel">';
@@ -717,7 +985,7 @@ class MHM_Audit_Admin {
 		echo '</div>';
 	}
 
-	/* ---------------------------------------------- 4. relationship errors */
+	/* ---------------------------------------------- 5. relationship errors */
 
 	private static function render_errors( array $context ): void {
 		$run = '1' === $context['run'];
