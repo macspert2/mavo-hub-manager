@@ -118,8 +118,9 @@ class MHM_Model {
 
 		if ( null !== $old_type ) {
 			// The old type's children can no longer point here: their meta key
-			// would claim a hub type this post no longer has.
-			$children = self::get_hub_children( $post_id, $old_type );
+			// would claim a hub type this post no longer has. Trashed children
+			// included — see CLEANUP_STATUSES.
+			$children = self::get_hub_children( $post_id, $old_type, [ 'post_status' => self::CLEANUP_STATUSES ] );
 
 			if ( $children && ! $confirm ) {
 				return new WP_Error(
@@ -169,7 +170,9 @@ class MHM_Model {
 			return new WP_Error( 'mhm_not_a_hub', __( 'That post or page is not a hub.', 'mavo-hub-manager' ) );
 		}
 
-		$children = self::get_hub_children( $post_id, $old_type );
+		// Trashed children too: their meta survives the trash, so leaving it
+		// would restore a pointer at a non-hub when the post comes back.
+		$children = self::get_hub_children( $post_id, $old_type, [ 'post_status' => self::CLEANUP_STATUSES ] );
 
 		if ( $children && ! $confirm ) {
 			return new WP_Error(
@@ -425,10 +428,42 @@ class MHM_Model {
 	/* -------------------------------------------------------------- queries */
 
 	/**
+	 * Statuses an editorial screen wants to see — everything a reader would
+	 * not, minus the two WordPress itself hides from 'any'.
+	 *
+	 * Spelled out rather than passed as 'any' so the raw-SQL reports in
+	 * MHM_Audit can apply exactly the same rule; the two used to disagree about
+	 * trashed children, and the difference showed up as a hub-health count that
+	 * did not match the hub's own screen.
+	 */
+	public const EDITORIAL_STATUSES = [ 'publish', 'future', 'draft', 'pending', 'private' ];
+
+	/**
+	 * Statuses a relationship can exist in at all, trash included.
+	 *
+	 * Only the cleanup paths use this. A trashed child keeps its meta, so
+	 * unmarking a hub has to clear the trashed children's relationships too —
+	 * otherwise restoring one from the trash restores a pointer at a post that
+	 * is no longer a hub.
+	 */
+	public const CLEANUP_STATUSES = [ 'publish', 'future', 'draft', 'pending', 'private', 'trash' ];
+
+	/**
 	 * Direct children of a hub: posts/pages whose own primary meta for this
 	 * type equals the hub ID. Derived every time — never stored, never cached
 	 * onto the hub.
 	 *
+	 * Published only by default. This used to default to post_status 'any',
+	 * which meant a caller outside this plugin had to know to ask for
+	 * 'publish' or it would hand drafts to readers — mavo-for-you documents
+	 * doing exactly that, which is evidence the default was the wrong way
+	 * round. Inside this plugin every caller is an editorial screen that wants
+	 * more than published, so they now say so; a consumer that says nothing
+	 * gets the safe answer.
+	 *
+	 * @param array $args WP_Query overrides. Pass
+	 *                    'post_status' => MHM_Model::EDITORIAL_STATUSES for an
+	 *                    admin listing.
 	 * @return int[] Child post IDs.
 	 */
 	public static function get_hub_children( int $hub_id, string $type, array $args = [] ): array {
@@ -442,7 +477,7 @@ class MHM_Model {
 		$query_args = array_merge(
 			[
 				'post_type'              => self::POST_TYPES,
-				'post_status'            => 'any',
+				'post_status'            => 'publish',
 				'meta_key'               => $key,
 				'meta_value'             => (string) $hub_id,
 				'fields'                 => 'ids',
@@ -462,8 +497,15 @@ class MHM_Model {
 		return array_map( 'absint', (array) $query->posts );
 	}
 
+	/**
+	 * How many children a hub owns, for display.
+	 *
+	 * Counts the editorial set, so it agrees with the hub's own children screen
+	 * and with MHM_Audit::child_count_map(), which answers the same question
+	 * for every hub at once.
+	 */
 	public static function count_hub_children( int $hub_id, string $type ): int {
-		return count( self::get_hub_children( $hub_id, $type ) );
+		return count( self::get_hub_children( $hub_id, $type, [ 'post_status' => self::EDITORIAL_STATUSES ] ) );
 	}
 
 	/**

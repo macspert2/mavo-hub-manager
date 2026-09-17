@@ -239,8 +239,7 @@ class WP_Query {
 		foreach ( $GLOBALS['MOCK_POSTS'] as $id => $post ) {
 			if ( ! in_array( $post->post_type, $types, true ) ) { continue; }
 
-			$status = (string) ( $args['post_status'] ?? 'any' );
-			if ( 'any' !== $status && $post->post_status !== $status ) { continue; }
+			if ( ! self::matches_status( $post, $args ) ) { continue; }
 
 			if ( ! self::matches_meta( $id, $args ) ) { continue; }
 			if ( ! self::matches_terms( $id, $args ) ) { continue; }
@@ -274,6 +273,24 @@ class WP_Query {
 		}
 
 		$this->posts = $found;
+	}
+
+	/**
+	 * post_status, as WP_Query actually treats it.
+	 *
+	 * A list is allowed, and 'any' is not "everything": WordPress excludes the
+	 * statuses flagged exclude_from_search, which for posts and pages means
+	 * trash and auto-draft. The stub used to accept only a string and compare
+	 * it with ===, so an array silently matched nothing.
+	 */
+	private static function matches_status( $post, array $args ): bool {
+		$status = $args['post_status'] ?? 'any';
+
+		if ( 'any' === $status ) {
+			return ! in_array( $post->post_status, [ 'trash', 'auto-draft' ], true );
+		}
+
+		return in_array( $post->post_status, (array) $status, true );
 	}
 
 	private static function matches_meta( int $id, array $args ): bool {
@@ -421,6 +438,115 @@ function finish(): void {
 
 	exit( $failed ? 1 : 0 );
 }
+
+/* ----------------------------------------------------------------- $wpdb */
+
+/**
+ * Enough of wpdb for the three grouped queries in MHM_Audit.
+ *
+ * Those queries are the production path: relationship_map(), child_count_map()
+ * and views_map() all return null without a $wpdb, and the callers then fall
+ * back to the model helpers. With no stub here, every audit test ran the
+ * fallback and the SQL branch was never executed at all — which is how the two
+ * came to disagree about trashed children without a single test failing.
+ *
+ * It does not parse SQL in general. It recognises the three shapes by a
+ * distinctive fragment and reads the meta key and status list back out of the
+ * prepared statement, so a query that forgets its status filter produces
+ * different results here, exactly as it would against MySQL.
+ */
+class MHM_Test_Wpdb {
+	public $postmeta = 'wp_postmeta';
+	public $posts    = 'wp_posts';
+
+	/** Mirrors wpdb::prepare closely enough for these statements. */
+	public function prepare( $sql, ...$args ) {
+		if ( 1 === count( $args ) && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
+
+		foreach ( $args as $arg ) {
+			$replacement = is_int( $arg ) ? (string) $arg : "'" . $arg . "'";
+			$sql         = preg_replace( '/%[ds]/', $replacement, $sql, 1 );
+		}
+
+		return $sql;
+	}
+
+	public function get_results( $sql ) {
+		$meta_key = $this->quoted_after( $sql, 'meta_key = ' );
+		$statuses = $this->in_list( $sql, 'post_status IN' );
+		$types    = $this->in_list( $sql, 'post_type IN' );
+
+		// views_map(): meta key, then an explicit id list, no posts join.
+		if ( str_contains( $sql, 'SELECT post_id, meta_value' ) ) {
+			$ids  = $this->in_list( $sql, 'post_id IN' );
+			$rows = [];
+			foreach ( $ids as $id ) {
+				$value = $GLOBALS['MOCK_META'][ (int) $id ][ $meta_key ] ?? null;
+				if ( null !== $value && '' !== $value ) {
+					$rows[] = (object) [ 'post_id' => (int) $id, 'meta_value' => $value ];
+				}
+			}
+			return $rows;
+		}
+
+		$pairs = [];
+		foreach ( $GLOBALS['MOCK_POSTS'] as $id => $post ) {
+			if ( $types && ! in_array( $post->post_type, $types, true ) ) { continue; }
+			if ( $statuses && ! in_array( $post->post_status, $statuses, true ) ) { continue; }
+
+			$hub = $GLOBALS['MOCK_META'][ (int) $id ][ $meta_key ] ?? '';
+			if ( '' === (string) $hub ) { continue; }
+
+			$pairs[ (int) $id ] = (string) $hub;
+		}
+
+		// child_count_map()
+		if ( str_contains( $sql, 'COUNT(*) AS total' ) ) {
+			$totals = [];
+			foreach ( $pairs as $hub ) {
+				$totals[ $hub ] = ( $totals[ $hub ] ?? 0 ) + 1;
+			}
+			$rows = [];
+			foreach ( $totals as $hub => $total ) {
+				$rows[] = (object) [ 'hub' => $hub, 'total' => $total ];
+			}
+			return $rows;
+		}
+
+		// relationship_map()
+		$rows = [];
+		foreach ( $pairs as $child => $hub ) {
+			$rows[] = (object) [ 'child' => $child, 'hub' => $hub ];
+		}
+
+		return $rows;
+	}
+
+	private function quoted_after( string $sql, string $needle ): string {
+		$at = strpos( $sql, $needle );
+		if ( false === $at ) { return ''; }
+
+		return preg_match( "/'([^']*)'/", substr( $sql, $at + strlen( $needle ) ), $m ) ? $m[1] : '';
+	}
+
+	/** @return string[] */
+	private function in_list( string $sql, string $needle ): array {
+		$at = strpos( $sql, $needle );
+		if ( false === $at ) { return []; }
+
+		$segment = substr( $sql, $at + strlen( $needle ) );
+		if ( ! preg_match( '/\(([^)]*)\)/', $segment, $m ) ) { return []; }
+
+		return array_map(
+			static fn( $v ) => trim( trim( $v ), "'" ),
+			explode( ',', $m[1] )
+		);
+	}
+}
+
+$GLOBALS['wpdb'] = new MHM_Test_Wpdb();
 
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-model.php';
 require_once __DIR__ . '/../includes/class-mavo-hub-manager-scanner.php';

@@ -915,7 +915,7 @@ class MHM_Audit {
 			if ( $hub ) {
 				$side['ancestors'] = MHM_Model::get_hub_ancestors( $hub, $type );
 
-				$children = MHM_Model::get_hub_children( $hub, $type, [ 'posts_per_page' => $max + 2 ] );
+				$children = MHM_Model::get_hub_children( $hub, $type, [ 'posts_per_page' => $max + 2, 'post_status' => MHM_Model::EDITORIAL_STATUSES ] );
 				$children = array_values( array_diff( $children, [ $post_id ] ) );
 
 				$side['siblings_more'] = count( $children ) > $max;
@@ -955,7 +955,7 @@ class MHM_Audit {
 		$candidates = MHM_Model::get_hub_children(
 			$grandparent,
 			$type,
-			[ 'posts_per_page' => ( self::GRAPH_AUNTS + 1 ) * 3 ]
+			[ 'posts_per_page' => ( self::GRAPH_AUNTS + 1 ) * 3, 'post_status' => MHM_Model::EDITORIAL_STATUSES ]
 		);
 
 		$aunts = [];
@@ -974,7 +974,7 @@ class MHM_Audit {
 		$aunts              = array_slice( $aunts, 0, self::GRAPH_AUNTS );
 
 		foreach ( $aunts as $aunt ) {
-			$children = MHM_Model::get_hub_children( $aunt, $type, [ 'posts_per_page' => self::GRAPH_COUSINS + 1 ] );
+			$children = MHM_Model::get_hub_children( $aunt, $type, [ 'posts_per_page' => self::GRAPH_COUSINS + 1, 'post_status' => MHM_Model::EDITORIAL_STATUSES ] );
 
 			$side['aunts'][] = [
 				'hub'      => $aunt,
@@ -1018,7 +1018,13 @@ class MHM_Audit {
 	 * child ID => hub ID for one type, in a single query.
 	 *
 	 * Returns null when there is no $wpdb to ask, and the caller falls back to
-	 * the model helpers — which is what the test harness runs on.
+	 * the model helpers.
+	 *
+	 * The status filter is what keeps this agreeing with that fallback. Without
+	 * it the SQL counted trashed and auto-draft children while every WP_Query
+	 * path excluded them, so the hub-health child count could exceed what the
+	 * hub's own screen listed and hub-traffic rolled a trashed post's views
+	 * into its hub's subtotal.
 	 */
 	public static function relationship_map( string $type ): ?array {
 		global $wpdb;
@@ -1029,7 +1035,8 @@ class MHM_Audit {
 			return null;
 		}
 
-		$placeholders = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+		$placeholders        = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+		$status_placeholders = implode( ', ', array_fill( 0, count( MHM_Model::EDITORIAL_STATUSES ), '%s' ) );
 
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
@@ -1038,9 +1045,10 @@ class MHM_Audit {
 				 FROM {$wpdb->postmeta} pm
 				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
 				 WHERE pm.meta_key = %s
-				   AND p.post_type IN ( {$placeholders} )",
+				   AND p.post_type IN ( {$placeholders} )
+				   AND p.post_status IN ( {$status_placeholders} )",
 				// phpcs:enable
-				array_merge( [ $key ], MHM_Model::POST_TYPES )
+				array_merge( [ $key ], MHM_Model::POST_TYPES, MHM_Model::EDITORIAL_STATUSES )
 			)
 		);
 
@@ -1210,7 +1218,8 @@ class MHM_Audit {
 		// No $wpdb: ask the model, hub by hub. Every hub of the type, not just
 		// the filtered ones, or a subtree could stop at a hub outside the filter.
 		foreach ( MHM_Model::get_hubs( [ 'type' => $type ] ) as $hub_id ) {
-			$children = MHM_Model::get_hub_children( (int) $hub_id, $type );
+			// Must match relationship_map()'s SQL, which this stands in for.
+			$children = MHM_Model::get_hub_children( (int) $hub_id, $type, [ 'post_status' => MHM_Model::EDITORIAL_STATUSES ] );
 
 			if ( $children ) {
 				$children_of[ (int) $hub_id ] = array_map( 'absint', $children );
@@ -1273,7 +1282,8 @@ class MHM_Audit {
 			return null;
 		}
 
-		$placeholders = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+		$placeholders        = implode( ', ', array_fill( 0, count( MHM_Model::POST_TYPES ), '%s' ) );
+		$status_placeholders = implode( ', ', array_fill( 0, count( MHM_Model::EDITORIAL_STATUSES ), '%s' ) );
 
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
@@ -1283,9 +1293,10 @@ class MHM_Audit {
 				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
 				 WHERE pm.meta_key = %s
 				   AND p.post_type IN ( {$placeholders} )
+				   AND p.post_status IN ( {$status_placeholders} )
 				 GROUP BY pm.meta_value",
 				// phpcs:enable
-				array_merge( [ $key ], MHM_Model::POST_TYPES )
+				array_merge( [ $key ], MHM_Model::POST_TYPES, MHM_Model::EDITORIAL_STATUSES )
 			)
 		);
 

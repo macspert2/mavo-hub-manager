@@ -402,7 +402,9 @@ class MHM_Scanner {
 	 * @return array{linked_assigned:int[],linked_not_assigned:int[],assigned_not_linked:int[]}
 	 */
 	public static function reverse_report( int $hub_id, string $type, array $linked_ids ): array {
-		$stored     = MHM_Model::get_hub_children( $hub_id, $type );
+		// Editorial view: a draft child is still assigned to this hub, and the
+		// admin comparing stored children against linked ones needs to see it.
+		$stored     = MHM_Model::get_hub_children( $hub_id, $type, [ 'post_status' => MHM_Model::EDITORIAL_STATUSES ] );
 		$linked_ids = array_map( 'absint', $linked_ids );
 
 		return [

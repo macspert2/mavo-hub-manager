@@ -1511,7 +1511,7 @@ class MHM_Admin {
 
 	private static function render_children( int $hub_id, array $context ): void {
 		$type     = (string) MHM_Model::get_hub_type( $hub_id );
-		$children = MHM_Model::get_hub_children( $hub_id, $type );
+		$children = MHM_Model::get_hub_children( $hub_id, $type, [ 'post_status' => MHM_Model::EDITORIAL_STATUSES ] );
 
 		echo '<div class="mhm-panel">';
 		printf(

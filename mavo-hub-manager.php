@@ -29,6 +29,14 @@ require_once MHM_PLUGIN_DIR . 'includes/class-mavo-hub-manager-audit-admin.php';
 add_action( 'plugins_loaded', static function () {
 	load_plugin_textdomain( 'mavo-hub-manager', false, dirname( plugin_basename( __FILE__ ) ) . '/languages' );
 
+	// Every screen and endpoint this plugin owns lives in wp-admin; the
+	// procedural API below is what the front end uses, and it needs no hooks.
+	// Initialising these on the front end registered an admin-only posts_search
+	// filter on every visitor's queries — inert, but it had no business there.
+	if ( ! is_admin() ) {
+		return;
+	}
+
 	MHM_Admin::init();
 	MHM_Audit_Admin::init();
 	MHM_Ajax::init();
