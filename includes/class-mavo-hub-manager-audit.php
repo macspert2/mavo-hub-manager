@@ -65,6 +65,12 @@ class MHM_Audit {
 	 *
 	 * Maman Voyage stores it as plain `views` (see mavo-geo-explorer and
 	 * postsByTagOrderedByViews).
+	 *
+	 * It is written by recent-post-popularity as a rolling ~90-day total, not
+	 * a lifetime count: the daily cron sums the window and resets any post
+	 * with no hits in it to 0. So "traffic a hub owns" here means traffic in
+	 * the last quarter, and a hub of older, quieter articles reports near
+	 * zero however much it was read historically.
 	 */
 	public static function views_meta_key(): string {
 		return (string) apply_filters( 'mavo_hub_manager_views_meta_key', 'views' );
