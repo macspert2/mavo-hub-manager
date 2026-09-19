@@ -1068,9 +1068,10 @@ class MHM_Admin {
 			'<p>%s</p>',
 			esc_html(
 				sprintf(
-					/* translators: 1: anchors found, 2: resolved internal targets */
-					__( '%1$d links found in the stored content, %2$d resolved to distinct posts or pages.', 'mavo-hub-manager' ),
+					/* translators: 1: anchors found, 2: shortcode URLs found, 3: resolved internal targets */
+					__( '%1$d links found in the stored content plus %2$d full URLs inside shortcodes, %3$d resolved to distinct posts or pages.', 'mavo-hub-manager' ),
 					$scan['anchors'],
+					$scan['shortcodes'] ?? 0,
 					$scan['resolved']
 				)
 			)

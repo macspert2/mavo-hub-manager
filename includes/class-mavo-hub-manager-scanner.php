@@ -10,6 +10,12 @@
  * shortcode output are invisible here — use the manual child editor for those.
  * Rendering shortcodes in admin can have side effects and pollute global $post,
  * and the scanner must stay deterministic.
+ *
+ * The one thing read out of a shortcode is a fully-qualified internal URL written
+ * in one of its attributes, e.g. [mavo_link url="https://www.mamanvoyage.com/…"].
+ * That is read as text, not rendered. Relative attribute values ("/france/") are
+ * deliberately ignored: in a shortcode they are as likely to be a slug or a label
+ * as a link, so there is no deterministic way to tell.
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -29,7 +35,7 @@ class MHM_Scanner {
 	 *
 	 * @return array{
 	 *   hub:int, type:string, rows:array, counts:array,
-	 *   linked_ids:int[], anchors:int, resolved:int
+	 *   linked_ids:int[], anchors:int, shortcodes:int, resolved:int
 	 * }|WP_Error
 	 */
 	public static function scan( int $hub_id ) {
@@ -41,8 +47,11 @@ class MHM_Scanner {
 			return new WP_Error( 'mhm_not_a_hub', __( 'The selected post is not a hub.', 'mavo-hub-manager' ) );
 		}
 
-		$urls    = self::extract_links( (string) $hub->post_content );
-		$targets = [];
+		$content   = (string) $hub->post_content;
+		$anchors   = self::extract_links( $content );
+		$shortcode = self::extract_shortcode_links( $content );
+		$urls      = array_merge( $anchors, $shortcode );
+		$targets   = [];
 
 		foreach ( $urls as $url ) {
 			$target_id = self::resolve_url( $url );
@@ -87,7 +96,8 @@ class MHM_Scanner {
 			'rows'       => $rows,
 			'counts'     => $counts,
 			'linked_ids' => array_map( 'absint', array_keys( $targets ) ),
-			'anchors'    => count( $urls ),
+			'anchors'    => count( $anchors ),
+			'shortcodes' => count( $shortcode ),
 			'resolved'   => count( $targets ),
 		];
 	}
@@ -250,6 +260,50 @@ class MHM_Scanner {
 			static fn( $raw ) => trim( $raw, "\"' " ),
 			$matches[1] ?? []
 		);
+	}
+
+	/**
+	 * Fully-qualified internal URLs written inside shortcode attributes.
+	 *
+	 * Shortcodes are still never rendered: the opening tag is read as text and
+	 * any http(s) URL inside it is returned, whichever attribute holds it. So
+	 * [mavo_link url="https://www.mamanvoyage.com/2020/09/cornouailles/"] counts,
+	 * and so does any other shortcode written the same way.
+	 *
+	 * Only absolute URLs are read. A relative value such as "/france/" is
+	 * ambiguous inside a shortcode — slug, path or plain label — so it is
+	 * skipped; the host is also what lets resolve_url() reject external targets.
+	 *
+	 * @return string[]
+	 */
+	public static function extract_shortcode_links( string $content ): array {
+		if ( ! str_contains( $content, '[' ) ) {
+			return [];
+		}
+
+		// Opening shortcode tags only: [tag …]. A closing tag starts with a slash.
+		if ( ! preg_match_all( '#\[[a-zA-Z0-9_-]+(?:\s[^\]\[]*)?\]#', $content, $tags ) ) {
+			return [];
+		}
+
+		$links = [];
+
+		foreach ( $tags[0] as $tag ) {
+			if ( ! preg_match_all( '#https?://[^\s"\'\]<>]+#i', $tag, $urls ) ) {
+				continue;
+			}
+
+			foreach ( $urls[0] as $url ) {
+				// Trailing sentence punctuation is never part of the URL.
+				$url = rtrim( $url, '.,;' );
+
+				if ( '' !== $url ) {
+					$links[] = $url;
+				}
+			}
+		}
+
+		return $links;
 	}
 
 	/* ---------------------------------------------------------- resolution */

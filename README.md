@@ -55,7 +55,8 @@ Broader relationships come from the hierarchy.
    ancestor chain, and prominent warnings (cycle, invalid primary hub, wrong hub type,
    cross-language parent).
 4. **Internal-link scanner** — parses the hub's stored content, resolves internal links
-   to post/page IDs and classifies each one.
+   to post/page IDs and classifies each one: anchors, plus any **fully-qualified**
+   internal URL written inside a shortcode attribute.
 5. **Add children by tag** — see below.
 6. **Direct children** and **manual child assignment**.
 
@@ -393,15 +394,32 @@ Filter for extra internal hostnames (staging, legacy domains):
 add_filter( 'mavo_hub_manager_internal_hosts', fn( $hosts ) => [ ...$hosts, 'staging.example' ] );
 ```
 
-## Known limitation
+## Shortcodes and the scanner
 
-The scanner reads **stored** `post_content` and does not render shortcodes: rendering in
+The scanner reads **stored** `post_content` and never renders shortcodes: rendering in
 admin can have side effects and pollute global `$post`, and the scan must stay
-deterministic. Links that only exist in shortcode output are not discovered by the hub's
-link scanner — assign those children manually. The audit's link-back check is the one
-exception: it parses known link-back shortcodes (`mavo_hub_strip`, `geo_related`) as text and resolves
-either their `slug` or, when there is none, the child's own primary hubs — still without
-rendering anything.
+deterministic.
+
+It does, however, read a shortcode's *text*. Any **fully-qualified** internal URL written
+in a shortcode attribute is picked up as a link, whichever shortcode and whichever
+attribute:
+
+```
+[mavo_link url="https://www.mamanvoyage.com/2020/09/cornouailles/" label="Notre article :"]Une semaine en Cornouailles[/mavo_link]
+```
+
+Relative values are deliberately **not** read. Inside a shortcode, `/france/` is as likely
+to be a slug, a path or a plain label as it is a link, and there is no deterministic way
+to tell the three apart — whereas an `https://…` value can only be one thing, and its host
+is also what lets the resolver reject external targets.
+
+So the remaining limitation is narrower than it was: a link that exists only in a
+shortcode's *rendered output*, with no URL in the stored tag, is still invisible to the
+scanner — assign those children manually.
+
+The audit's link-back check resolves known link-back shortcodes (`mavo_hub_strip`,
+`geo_related`) differently again, by their `slug` or, when there is none, the child's own
+primary hubs — still without rendering anything.
 
 ## Tests
 
@@ -414,7 +432,7 @@ No WordPress required; the harness stubs what the model and scanner call.
 | File | Covers |
 |---|---|
 | `test-model.php` | marking, relationship validity, hierarchy, cycles, confirmed type changes |
-| `test-scanner.php` | URL resolution, classification, reverse grouping |
+| `test-scanner.php` | URL resolution, shortcode URL extraction, classification, reverse grouping |
 | `test-tags.php` | tag suggestion by hub name, tagged-post listing, classification, paging |
 | `test-polylang.php` | language reporting, same vs cross language |
 | `test-no-polylang.php` | everything still works with Polylang absent |
